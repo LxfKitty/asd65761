@@ -4035,7 +4035,6 @@ async function 处理订阅值(请求241, 用户240 = null) {
       selectClient: '[ 选择客户端 ]',
       systemStatus: '[ 系统状态 ]',
       configManagement: '[ 配置管理 ]',
-      relatedLinks: '[ 相关链接 ]',
       checking: '检测中...',
       workerRegion: 'Worker地区: ',
       detectionMethod: '检测方式: ',
@@ -4153,8 +4152,6 @@ async function 处理订阅值(请求241, 用户240 = null) {
         GB: '🇬🇧 英国'
       },
       terminal: '终端 v2.9.9',
-      githubProject: 'GitHub 项目',
-      优选工具: '优选工具',
       autoDetectClient: '自动识别',
       selectionLogicText: '同地区 → 邻近地区 → 其他地区',
       customIPDisabledHint: 解码64('5L2/55So6Ieq5a6a5LmJUHJveHlJUOaXtu+8jOWcsOWMuumAieaLqeW3suemgeeUqA=='),
@@ -4187,7 +4184,6 @@ async function 处理订阅值(请求241, 用户240 = null) {
       selectClient: '[ انتخاب کلاینت ]',
       systemStatus: '[ وضعیت سیستم ]',
       configManagement: '[ مدیریت تنظیمات ]',
-      relatedLinks: '[ لینک‌های مرتبط ]',
       checking: 'در حال بررسی...',
       workerRegion: 'منطقه Worker: ',
       detectionMethod: 'روش تشخیص: ',
@@ -4305,8 +4301,6 @@ async function 处理订阅值(请求241, 用户240 = null) {
         GB: '🇬🇧 بریتانیا'
       },
       terminal: 'ترمینال v2.9.9',
-      githubProject: 'پروژه GitHub',
-      优选工具: 'ابزار ترجیح IP',
       autoDetectClient: 'تشخیص خودکار',
       selectionLogicText: 'هم‌منطقه → منطقه مجاور → سایر مناطق',
       customIPDisabledHint: 解码64('2YfZhtqv2KfZhSDYp9iz2KrZgdin2K/ZhyDYp9iyIFByb3h5SVAg2LPZgdin2LHYtNuM2Iwg2KfZhtiq2K7Yp9ioINmF2YbYt9mC2Ycg2LrbjNix2YHYudin2YQg2KfYs9iq'),
@@ -5632,15 +5626,6 @@ async function 处理订阅值(请求241, 用户240 = null) {
                     </div>
                 </div>
                 <div id="statusMessage" style="display: none; padding: 10px; margin: 10px 0; border: 1px solid #00f0ff; background: rgba(8, 4, 28, 0.8); color: #00f0ff; text-shadow: 0 0 5px #00f0ff;"></div>
-            </div>
-            
-            <div class="card">
-                    <h2 class="card-title">${翻译值.relatedLinks}</h2>
-                <div style="text-align: center; margin: 20px 0;">
-                        <a href="https://github.com/byJoey/cfnew" target="_blank" style="color: #00f0ff; text-decoration: none; margin: 0 20px; font-size: 1.2rem; text-shadow: 0 0 5px #00f0ff;">${翻译值.githubProject}</a>
-                        <a href="https://github.com/byJoey/yx-tools/releases/" target="_blank" rel="noopener noreferrer" style="color: #00f0ff; text-decoration: none; margin: 0 20px; font-size: 1.2rem; text-shadow: 0 0 5px #00f0ff;">${翻译值.优选工具}</a>
-                    <a href="https://www.youtube.com/@joeyblog" target="_blank" style="color: #00f0ff; text-decoration: none; margin: 0 20px; font-size: 1.2rem; text-shadow: 0 0 5px #00f0ff;">YouTube @joeyblog</a>
-                </div>
             </div>
         </div>
         <div id="cpToastStack" class="cp-toast-stack" aria-live="polite" aria-atomic="false"></div>
