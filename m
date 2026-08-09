@@ -2,7 +2,7 @@
 // 版本: v2.9.9 
 import { connect as 连接 } from 'cloudflare:sockets';
 
-// CFnew calm glass UI response-layer enhancement. Business/API logic below is unchanged.
+// CFnew calm glass UI + mobile transport compatibility repair. UI/API behavior is preserved; WebSocket handshake and DNS transport are hardened.
 const __CFNativeResponse = globalThis.Response;
 const __CF_UI_MARKER = 'data-cfnew-ui="calm-glass-v2"';
 const __CFEarlyTheme = `<meta name="color-scheme" content="light dark"><script id="cfThemeInit">(function(){try{var m=localStorage.getItem('cfnew-theme-mode')||'system';if(!/^(system|light|dark)$/.test(m))m='system';var q=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)');var r=m==='system'?(q&&q.matches?'dark':'light'):m;document.documentElement.setAttribute('data-theme-mode',m);document.documentElement.setAttribute('data-theme',r);document.documentElement.style.colorScheme=r}catch(e){document.documentElement.setAttribute('data-theme-mode','system')}})();</script>`;
@@ -2337,7 +2337,7 @@ function 解析链接值值节点(链接652) {
       const 参数646 = new URLSearchParams(网址651.search);
       const 传输层安全645 = 参数646.get('security') === 'tls' || 参数646.get('tls') === 'true';
       const 本地值644 = 参数646.get('type') || 'ws';
-      const 路径643 = 参数646.get('path') || '/?ed=2048';
+      const 路径643 = 参数646.get('path') || '/';
       const 主机642 = 参数646.get('host') || 本地值648;
       const 本地值641 = 参数646.get('sni') || 主机642;
       const 应用层协议协商原始640 = 参数646.get('alpn') || '';
@@ -2385,7 +2385,7 @@ function 解析链接值值节点(链接652) {
       const 端口630 = parseInt(网址634.port) || 443;
       const 参数629 = new URLSearchParams(网址634.search);
       const 本地值628 = 参数629.get('type') || 'ws';
-      const 路径 = 参数629.get('path') || '/?ed=2048';
+      const 路径 = 参数629.get('path') || '/';
       const 主机627 = 参数629.get('host') || 本地值631;
       const 服务名称指示626 = 参数629.get('sni') || 主机627;
       const 应用层协议协商原始 = 参数629.get('alpn') || '';
@@ -2491,7 +2491,7 @@ function 解析值链接(链接603) {
         port: parseInt(网址602.port) || 443,
         tls: 参数值601.get('security') === 'tls' || 参数值601.get('security') === 解码64('cmVhbGl0eQ=='),
         network: 参数值601.get('type') || 'ws',
-        path: 参数值601.get('path') || '/?ed=2048',
+        path: 参数值601.get('path') || '/',
         host: 规范化值主机(参数值601.get('host') || 网址602.hostname),
         sni: 规范化值主机(参数值601.get('sni') || 参数值601.get('host') || 网址602.hostname),
         alpn: (参数值601.get('alpn') || '').split(',').map(字符串值600 => 字符串值600.trim()).filter(Boolean),
@@ -2513,7 +2513,7 @@ function 解析值链接(链接603) {
         port: parseInt(网址599.port) || 443,
         tls: true,
         network: 参数值.get('type') || 'ws',
-        path: 参数值.get('path') || '/?ed=2048',
+        path: 参数值.get('path') || '/',
         host: 规范化值主机(参数值.get('host') || 网址599.hostname),
         sni: 规范化值主机(参数值.get('sni') || 参数值.get('host') || 网址599.hostname),
         alpn: (参数值.get('alpn') || '').split(',').map(字符串值598 => 字符串值598.trim()).filter(Boolean),
@@ -2537,13 +2537,13 @@ function 构建值节点行(数量值596) {
   行列表595.push(`    port: ${数量值596.port}`);
   if (数量值596.proto === 解码64('dmxlc3M=')) {
     行列表595.push(`    uuid: ${数量值596.uuid}`);
-    行列表595.push(`    udp: true`);
+    行列表595.push(`    udp: false`);
     行列表595.push(`    tls: ${数量值596.tls ? 'true' : 'false'}`);
     if (数量值596.flow) 行列表595.push(`    flow: ${处理本地值622(数量值596.flow)}`);
     行列表595.push(`    client-fingerprint: ${处理本地值622(数量值596.fp || 'chrome')}`);
   } else if (数量值596.proto === 解码64('dHJvamFu')) {
     行列表595.push(`    password: ${处理本地值622(数量值596.password)}`);
-    行列表595.push(`    udp: true`);
+    行列表595.push(`    udp: false`);
     行列表595.push(`    client-fingerprint: ${处理本地值622(数量值596.fp || 'chrome')}`);
   }
   if (数量值596.tls) {
@@ -2645,10 +2645,16 @@ function 生成值值数据对象(链接列表573) {
         path: 数量值568.path,
         headers: {
           Host: 数量值568.host
-        },
-        max_early_data: 2048,
-        early_data_header_name: 'Sec-WebSocket-Protocol'
+        }
       };
+      const 提前数据匹配 = String(数量值568.path || '').match(/[?&]ed=(\d+)/i);
+      if (提前数据匹配) {
+        const 提前数据大小 = Math.min(8192, Math.max(0, Number.parseInt(提前数据匹配[1], 10) || 0));
+        if (提前数据大小 > 0) {
+          输出567.transport.max_early_data = 提前数据大小;
+          输出567.transport.early_data_header_name = 'Sec-WebSocket-Protocol';
+        }
+      }
     } else if (数量值568.network === 'grpc') {
       输出567.transport = {
         type: 'grpc',
@@ -3485,7 +3491,7 @@ function 生成链接列表来源源(列表482, 用户481, 工作器域名480, �
   const 默认安全超文本值474 = [443];
   const 默认超文本值473 = 禁用非传输层安全 ? [] : [80];
   const 链接列表472 = [];
-  const 网页套接字路径471 = '/?ed=2048';
+  const 网页套接字路径471 = '/';
   const 协议470 = atob('dmxlc3M=');
   const 制作节点名称469 = 别名命名器477 || 创建值节点命名器(跳过编号478);
   for (const 项目468 of 列表482) {
@@ -3569,7 +3575,7 @@ async function 生成木马链接列表来源源(列表455, 用户454, 工作器
   const 默认安全超文本值 = [443];
   const 默认超文本值 = 禁用非传输层安全 ? [] : [80];
   const 链接列表447 = [];
-  const 网页套接字路径446 = '/?ed=2048';
+  const 网页套接字路径446 = '/';
   const 密码445 = 传输路径 || 用户454;
   const 制作节点名称444 = 别名命名器450 || 创建值节点命名器(跳过编号451);
   for (const 项目443 of 列表455) {
@@ -3759,8 +3765,9 @@ async function 处理网页套接字请求(请求417) {
     writer: null,
     drainUpload: null
   };
-  let 是否域名系统值 = false;
   let 协议类型 = null;
+  let 握手缓冲 = new Uint8Array(0);
+  const 握手缓冲上限 = 16384;
   let 值值408 = false;
   let 传输值 = false;
   const 值队列 = 创建块队列(传输上传包大小, 传输上传队列上限, 传输上传队列上限 >> 8);
@@ -3817,7 +3824,6 @@ async function 处理网页套接字请求(请求417) {
     async write(块397) {
       if (传输值) return;
       const 数据396 = 处理值值8数组(块397);
-      if (是否域名系统值) return await 处理值用户数据报(数据396, 值值410, null, 请求值407);
       if (远程连接值409.socket && 远程连接值409.writer) {
         if (!处理队列值(数据396)) throw new Error('upload queue overflow');
         return;
@@ -3827,8 +3833,13 @@ async function 处理网页套接字请求(请求417) {
         return;
       }
       if (!协议类型) {
-        if (启用明文 && 数据396.byteLength >= 24) {
-          const 轻量协议结果 = 解析网页套接字值头部(数据396, 认证令牌);
+        握手缓冲 = 握手缓冲.byteLength ? 拼接值8数组(握手缓冲, 数据396) : 数据396.slice();
+        if (握手缓冲.byteLength > 握手缓冲上限) throw new Error('Protocol header is too large');
+        const 握手数据 = 握手缓冲;
+        let 需要更多握手数据 = false;
+
+        if (启用明文) {
+          const 轻量协议结果 = 解析网页套接字值头部(握手数据, 认证令牌);
           if (!轻量协议结果.hasError) {
             协议类型 = 解码64('dmxlc3M=');
             const {
@@ -3839,18 +3850,22 @@ async function 处理网页套接字请求(请求417) {
               version: 本地值392,
               isUDP: 是否用户数据报391
             } = 轻量协议结果;
-            if (是否用户数据报391) {
-              if (端口394 === 53) 是否域名系统值 = true;else throw new Error(错误_仅支持域名系统用户数据报);
-            }
+            if (是否用户数据报391 && 端口394 !== 53) throw new Error(错误_仅支持域名系统用户数据报);
             const 值头部390 = new Uint8Array([本地值392[0], 0]);
-            const 原始数据389 = 数据396.subarray(原始索引);
-            if (是否域名系统值) return 处理值用户数据报(原始数据389, 值值410, 值头部390, 请求值407);
-            await 处理值值384(地址类型395, 主机名393, 端口394, 原始数据389, 值值410, 值头部390, 远程连接值409, 请求回退416, 实际地区411, 请求值414, 请求代理配置413, 请求值407);
+            const 原始数据389 = 握手数据.subarray(原始索引);
+            握手缓冲 = new Uint8Array(0);
+            if (是否用户数据报391) {
+              await 处理值域名系统连接(主机名393, 原始数据389, 值值410, 值头部390, 远程连接值409, 请求值407);
+            } else {
+              await 处理值值384(地址类型395, 主机名393, 端口394, 原始数据389, 值值410, 值头部390, 远程连接值409, 请求回退416, 实际地区411, 请求值414, 请求代理配置413, 请求值407);
+            }
             return;
           }
+          if (轻量协议结果.needMore) 需要更多握手数据 = true;
         }
-        if (启用木马 && 数据396.byteLength >= 56) {
-          const 值结果 = await 解析木马头部(数据396, 认证令牌);
+
+        if (启用木马) {
+          const 值结果 = await 解析木马头部(握手数据, 认证令牌);
           if (!值结果.hasError) {
             协议类型 = atob('dHJvamFu');
             const {
@@ -3859,10 +3874,14 @@ async function 处理网页套接字请求(请求417) {
               hostname: 主机名386,
               rawClientData: 原始客户端数据
             } = 值结果;
+            握手缓冲 = new Uint8Array(0);
             await 处理值值384(地址类型388, 主机名386, 端口387, 原始客户端数据, 值值410, null, 远程连接值409, 请求回退416, 实际地区411, 请求值414, 请求代理配置413, 请求值407);
             return;
           }
+          if (值结果.needMore) 需要更多握手数据 = true;
         }
+
+        if (需要更多握手数据) return;
         throw new Error('Invalid protocol or authentication failed');
       }
     }
@@ -4200,6 +4219,7 @@ function 解析网页套接字值头部(块297, 令牌) {
   const 字节296 = 处理值值8数组(块297);
   if (字节296.byteLength < 24) return {
     hasError: true,
+    needMore: true,
     message: 错误_无效数据
   };
   const 本地值295 = 字节296.subarray(0, 1);
@@ -4211,6 +4231,7 @@ function 解析网页套接字值头部(块297, 令牌) {
   const 命令索引 = 18 + 值长度294;
   if (字节296.byteLength < 命令索引 + 5) return {
     hasError: true,
+    needMore: true,
     message: 错误_无效数据
   };
   const 命令293 = 字节296[命令索引];
@@ -4235,6 +4256,7 @@ function 解析网页套接字值头部(块297, 令牌) {
       地址长度289 = 4;
       if (字节296.byteLength < 地址值索引 + 地址长度289) return {
         hasError: true,
+        needMore: true,
         message: 错误_无效数据
       };
       主机名288 = `${字节296[地址值索引]}.${字节296[地址值索引 + 1]}.${字节296[地址值索引 + 2]}.${字节296[地址值索引 + 3]}`;
@@ -4242,11 +4264,13 @@ function 解析网页套接字值头部(块297, 令牌) {
     case 地址类型_网址:
       if (字节296.byteLength < 地址值索引 + 1) return {
         hasError: true,
+        needMore: true,
         message: 错误_无效数据
       };
       地址长度289 = 字节296[地址值索引++];
       if (字节296.byteLength < 地址值索引 + 地址长度289) return {
         hasError: true,
+        needMore: true,
         message: 错误_无效数据
       };
       主机名288 = 共享解码器.decode(字节296.subarray(地址值索引, 地址值索引 + 地址长度289));
@@ -4255,6 +4279,7 @@ function 解析网页套接字值头部(块297, 令牌) {
       地址长度289 = 16;
       if (字节296.byteLength < 地址值索引 + 地址长度289) return {
         hasError: true,
+        needMore: true,
         message: 错误_无效数据
       };
       const 值6286 = [];
@@ -4385,15 +4410,49 @@ async function 连接值279(远程套接字, 网页套接字278, 头部数据, �
   }
   if (!是否有数据 && !本地值276 && 重试值) 重试值();
 }
-async function 处理值用户数据报(用户数据报块, 网页套接字, 值头部, 请求值 = null) {
-  try {
-    const 值套接字 = await 连接值套接字('8.8.4.4', 53, 请求值, 1);
-    let 头部 = 值头部;
-    const 写入器264 = 值套接字.writable.getWriter();
-    await 写入器264.write(用户数据报块);
-    写入器264.releaseLock();
-    await 连接值279(值套接字, 网页套接字, 头部, null);
-  } catch (错误263) {}
+async function 处理值域名系统连接(目标主机, 首包数据, 网页套接字, 值头部, 远程连接值, 请求值 = null) {
+  const 候选主机 = [];
+  const 规范目标 = 规范化目标地址(目标主机);
+  if (规范目标) 候选主机.push(规范目标);
+  if (!候选主机.includes('8.8.4.4')) 候选主机.push('8.8.4.4');
+  let 最后错误 = null;
+
+  for (const 域名系统主机 of 候选主机) {
+    let 值套接字 = null;
+    let 写入器 = null;
+    try {
+      值套接字 = await 连接值套接字(域名系统主机, 53, 请求值, 1);
+      写入器 = 值套接字.writable.getWriter();
+      const 首包 = 处理值值8数组(首包数据);
+      if (首包.byteLength) await 写入器.write(首包);
+
+      远程连接值.socket = 值套接字;
+      远程连接值.writer = 写入器;
+      远程连接值.drainUpload?.();
+
+      值套接字.closed.catch(() => {}).finally(() => {
+        if (远程连接值.socket === 值套接字) 关闭套接字值(网页套接字);
+      });
+      连接值279(值套接字, 网页套接字, 值头部, null).finally(() => {
+        if (远程连接值.socket === 值套接字) {
+          try {
+            写入器?.releaseLock();
+          } catch (忽略值263) {}
+          远程连接值.writer = null;
+        }
+      });
+      return;
+    } catch (错误263) {
+      最后错误 = 错误263;
+      try {
+        写入器?.releaseLock();
+      } catch (忽略值262) {}
+      try {
+        值套接字?.close();
+      } catch (忽略值261) {}
+    }
+  }
+  throw 最后错误 || new Error('DNS TCP connection failed');
 }
 async function 处理值代理连接(地址类型, 地址262, 端口261, 代理配置 = 已解析代理5配置, 请求值258 = null, 首包数据 = null) {
   // 按代理种类分派：隧道走建隧请求，其余保持套接字5 握手
@@ -8385,13 +8444,14 @@ async function 解析木马头部(缓冲234, 本地值233) {
   const 字节 = 处理值值8数组(缓冲234);
   const 密码值井号 = 传输路径 || 本地值233;
   const 值224密码 = await 处理值224井号(密码值井号);
-  if (字节.byteLength < 56) {
+  if (字节.byteLength < 58) {
     return {
       hasError: true,
+      needMore: true,
       message: "invalid " + atob('dHJvamFu') + " data - too short"
     };
   }
-  let 值值索引 = 56;
+  const 值值索引 = 56;
   if (字节[56] !== 0x0d || 字节[57] !== 0x0a) {
     return {
       hasError: true,
@@ -8406,41 +8466,60 @@ async function 解析木马头部(缓冲234, 本地值233) {
     };
   }
   const 代理5数据缓冲 = 字节.subarray(值值索引 + 2);
-  if (代理5数据缓冲.byteLength < 6) {
+  if (代理5数据缓冲.byteLength < 2) {
     return {
       hasError: true,
+      needMore: true,
       message: atob('aW52YWxpZCBTT0NLUzUgcmVxdWVzdCBkYXRh')
     };
   }
-  const 视图231 = new DataView(代理5数据缓冲.buffer, 代理5数据缓冲.byteOffset, 代理5数据缓冲.byteLength);
-  const 命令230 = 视图231.getUint8(0);
+  const 命令230 = 代理5数据缓冲[0];
   if (命令230 !== 1) {
     return {
       hasError: true,
       message: "unsupported command, only TCP (CONNECT) is allowed"
     };
   }
-  const 本地值229 = 视图231.getUint8(1);
+  const 本地值229 = 代理5数据缓冲[1];
   let 地址长度 = 0;
   let 地址索引228 = 2;
   let 地址227 = "";
+
   switch (本地值229) {
     case 1:
       地址长度 = 4;
+      if (代理5数据缓冲.byteLength < 地址索引228 + 地址长度 + 4) return {
+        hasError: true,
+        needMore: true,
+        message: atob('aW52YWxpZCBTT0NLUzUgcmVxdWVzdCBkYXRh')
+      };
       地址227 = 代理5数据缓冲.subarray(地址索引228, 地址索引228 + 地址长度).join(".");
       break;
     case 3:
+      if (代理5数据缓冲.byteLength < 地址索引228 + 1) return {
+        hasError: true,
+        needMore: true,
+        message: atob('aW52YWxpZCBTT0NLUzUgcmVxdWVzdCBkYXRh')
+      };
       地址长度 = 代理5数据缓冲[地址索引228];
       地址索引228 += 1;
+      if (代理5数据缓冲.byteLength < 地址索引228 + 地址长度 + 4) return {
+        hasError: true,
+        needMore: true,
+        message: atob('aW52YWxpZCBTT0NLUzUgcmVxdWVzdCBkYXRh')
+      };
       地址227 = 共享解码器.decode(代理5数据缓冲.subarray(地址索引228, 地址索引228 + 地址长度));
       break;
     case 4:
       地址长度 = 16;
+      if (代理5数据缓冲.byteLength < 地址索引228 + 地址长度 + 4) return {
+        hasError: true,
+        needMore: true,
+        message: atob('aW52YWxpZCBTT0NLUzUgcmVxdWVzdCBkYXRh')
+      };
       const 数据视图 = new DataView(代理5数据缓冲.buffer, 代理5数据缓冲.byteOffset + 地址索引228, 地址长度);
       const 值6 = [];
-      for (let 索引值226 = 0; 索引值226 < 8; 索引值226++) {
-        值6.push(数据视图.getUint16(索引值226 * 2).toString(16));
-      }
+      for (let 索引值226 = 0; 索引值226 < 8; 索引值226++) 值6.push(数据视图.getUint16(索引值226 * 2).toString(16));
       地址227 = 值6.join(":");
       break;
     default:
@@ -8449,6 +8528,7 @@ async function 解析木马头部(缓冲234, 本地值233) {
         message: `invalid addressType is ${本地值229}`
       };
   }
+
   if (!地址227) {
     return {
       hasError: true,
@@ -8456,6 +8536,17 @@ async function 解析木马头部(缓冲234, 本地值233) {
     };
   }
   const 端口索引225 = 地址索引228 + 地址长度;
+  if (代理5数据缓冲.byteLength < 端口索引225 + 4) return {
+    hasError: true,
+    needMore: true,
+    message: atob('aW52YWxpZCBTT0NLUzUgcmVxdWVzdCBkYXRh')
+  };
+  if (代理5数据缓冲[端口索引225 + 2] !== 0x0d || 代理5数据缓冲[端口索引225 + 3] !== 0x0a) {
+    return {
+      hasError: true,
+      message: "invalid " + atob('dHJvamFu') + " request format (missing CR LF)"
+    };
+  }
   const 端口远程 = new DataView(代理5数据缓冲.buffer, 代理5数据缓冲.byteOffset + 端口索引225, 2).getUint16(0);
   return {
     hasError: false,
@@ -8970,7 +9061,7 @@ function 生成链接列表来源新地址列表(列表100, 用户99, 工作器�
   const 云墙超文本端口94 = [80, 8080, 8880, 2052, 2082, 2086, 2095];
   const 云墙安全超文本端口93 = [443, 2053, 2083, 2087, 2096, 8443];
   const 链接列表92 = [];
-  const 网页套接字路径91 = '/?ed=2048';
+  const 网页套接字路径91 = '/';
   const 协议 = atob('dmxlc3M=');
   const 制作节点名称90 = 别名命名器95 || 创建值节点命名器(跳过编号96);
   for (const 项目89 of 列表100) {
@@ -9044,7 +9135,7 @@ async function 生成木马链接列表来源新地址列表(列表, 用户, 工
   const 云墙超文本端口 = [80, 8080, 8880, 2052, 2082, 2086, 2095];
   const 云墙安全超文本端口 = [443, 2053, 2083, 2087, 2096, 8443];
   const 链接列表 = [];
-  const 网页套接字路径 = '/?ed=2048';
+  const 网页套接字路径 = '/';
   const 密码 = 传输路径 || 用户;
   const 制作节点名称 = 别名命名器 || 创建值节点命名器(跳过编号);
   for (const 项目62 of 列表) {
