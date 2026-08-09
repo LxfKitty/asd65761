@@ -667,7 +667,7 @@ const 远程配置网址 = 'https://raw.githubusercontent.com/byJoey/test/refs/h
 let 启用优选域名 = true; // 优选域名默认关闭
 let 启用优选地址 = true;
 let 启用仓库优选 = true;
-let 启用原生地址 = false; // 原生地址默认关闭          
+let 启用原生地址 = true; // 原生地址默认开启：作为优选IP/域名失效时的稳定回退          
 
 let 键值存储 = null;
 let 键值配置 = {};
@@ -691,7 +691,7 @@ const 配置默认值 = {
   s: '',
   homepage: '',
   scu: 解码64('aHR0cHM6Ly91cmwudjEubWsvc3Vi'),
-  ena: 'no',
+  ena: 'yes',
   epd: 'yes',
   epi: 'yes',
   egi: 'yes',
@@ -1360,7 +1360,7 @@ export default {
       启用优选域名 = 获取配置开关值('epd', true, 本地值734.epd || 本地值734.EPD);
       启用优选地址 = 获取配置开关值('epi', true, 本地值734.epi || 本地值734.EPI);
       启用仓库优选 = 获取配置开关值('egi', true, 本地值734.egi || 本地值734.EGI);
-      启用原生地址 = 获取配置开关值('ena', false, 本地值734.ena || 本地值734.ENA);
+      启用原生地址 = 获取配置开关值('ena', true, 本地值734.ena || 本地值734.ENA);
       启用加密客户端问候 = 获取配置开关值('ech', false, 本地值734.ech || 本地值734.ECH);
 
       // 加载自定义DNS和ECH域名配置
@@ -2337,7 +2337,7 @@ function 解析链接值值节点(链接652) {
       const 参数646 = new URLSearchParams(网址651.search);
       const 传输层安全645 = 参数646.get('security') === 'tls' || 参数646.get('tls') === 'true';
       const 本地值644 = 参数646.get('type') || 'ws';
-      const 路径643 = 参数646.get('path') || '/';
+      const 路径643 = 参数646.get('path') || '/?ed=2048';
       const 主机642 = 参数646.get('host') || 本地值648;
       const 本地值641 = 参数646.get('sni') || 主机642;
       const 应用层协议协商原始640 = 参数646.get('alpn') || '';
@@ -2385,7 +2385,7 @@ function 解析链接值值节点(链接652) {
       const 端口630 = parseInt(网址634.port) || 443;
       const 参数629 = new URLSearchParams(网址634.search);
       const 本地值628 = 参数629.get('type') || 'ws';
-      const 路径 = 参数629.get('path') || '/';
+      const 路径 = 参数629.get('path') || '/?ed=2048';
       const 主机627 = 参数629.get('host') || 本地值631;
       const 服务名称指示626 = 参数629.get('sni') || 主机627;
       const 应用层协议协商原始 = 参数629.get('alpn') || '';
@@ -2491,7 +2491,7 @@ function 解析值链接(链接603) {
         port: parseInt(网址602.port) || 443,
         tls: 参数值601.get('security') === 'tls' || 参数值601.get('security') === 解码64('cmVhbGl0eQ=='),
         network: 参数值601.get('type') || 'ws',
-        path: 参数值601.get('path') || '/',
+        path: 参数值601.get('path') || '/?ed=2048',
         host: 规范化值主机(参数值601.get('host') || 网址602.hostname),
         sni: 规范化值主机(参数值601.get('sni') || 参数值601.get('host') || 网址602.hostname),
         alpn: (参数值601.get('alpn') || '').split(',').map(字符串值600 => 字符串值600.trim()).filter(Boolean),
@@ -2513,7 +2513,7 @@ function 解析值链接(链接603) {
         port: parseInt(网址599.port) || 443,
         tls: true,
         network: 参数值.get('type') || 'ws',
-        path: 参数值.get('path') || '/',
+        path: 参数值.get('path') || '/?ed=2048',
         host: 规范化值主机(参数值.get('host') || 网址599.hostname),
         sni: 规范化值主机(参数值.get('sni') || 参数值.get('host') || 网址599.hostname),
         alpn: (参数值.get('alpn') || '').split(',').map(字符串值598 => 字符串值598.trim()).filter(Boolean),
@@ -2973,10 +2973,10 @@ function 生成值值562(链接列表561) {
 function 生成值值552(链接列表551) {
   const 节点列表550 = 链接列表551.map(解析值链接).filter(数量值549 => 数量值549 && (数量值549.proto === 解码64('dmxlc3M=') || 数量值549.proto === 解码64('dHJvamFu')));
   const 名称列表548 = 节点列表550.map(数量值547 => 数量值547.name);
-  const 行列表546 = ['[General]', 'ip-mode = dual', `dns-server = ${(自定义域名系统 || '223.5.5.5').replace(/^https?:\/\//, '').replace(/\/.*$/, '')},119.29.29.29,system`, 'doh-server = https://223.5.5.5/dns-query, https://1.12.12.12/dns-query', 解码64('YWxsb3ctdWRwLXByb3h5ID0gdHJ1ZQ=='), 'allow-wifi-access = false', 'sni-sniffing = true', 解码64('c2tpcC1wcm94eSA9IDEyNy4wLjAuMSwxOTIuMTY4LjAuMC8xNiwxMC4wLjAuMC84LDE3Mi4xNi4wLjAvMTIsbG9jYWxob3N0LCoubG9jYWwsY2FwdGl2ZS5hcHBsZS5jb20='), 'bypass-tun = 10.0.0.0/8,100.64.0.0/10,127.0.0.0/8,169.254.0.0/16,172.16.0.0/12,192.0.0.0/24,192.0.2.0/24,192.88.99.0/24,192.168.0.0/16,198.51.100.0/24,203.0.113.0/24,224.0.0.0/4,255.255.255.255/32', '', 解码64('W1Byb3h5XQ==')];
+  const 行列表546 = ['[General]', 'ip-mode = dual', `dns-server = ${(自定义域名系统 || '223.5.5.5').replace(/^https?:\/\//, '').replace(/\/.*$/, '')},119.29.29.29,system`, 'doh-server = https://223.5.5.5/dns-query, https://1.12.12.12/dns-query', 解码64('YWxsb3ctdWRwLXByb3h5ID0gZmFsc2U='), 'allow-wifi-access = false', 'sni-sniffing = true', 解码64('c2tpcC1wcm94eSA9IDEyNy4wLjAuMSwxOTIuMTY4LjAuMC8xNiwxMC4wLjAuMC84LDE3Mi4xNi4wLjAvMTIsbG9jYWxob3N0LCoubG9jYWwsY2FwdGl2ZS5hcHBsZS5jb20='), 'bypass-tun = 10.0.0.0/8,100.64.0.0/10,127.0.0.0/8,169.254.0.0/16,172.16.0.0/12,192.0.0.0/24,192.0.2.0/24,192.88.99.0/24,192.168.0.0/16,198.51.100.0/24,203.0.113.0/24,224.0.0.0/4,255.255.255.255/32', '', 解码64('W1Byb3h5XQ==')];
   for (const 数量值545 of 节点列表550) {
     if (数量值545.proto === 解码64('dmxlc3M=')) {
-      const 部分列表544 = [`${数量值545.server}`, `${数量值545.port}`, `udp=true`, `username=${数量值545.uuid}`, `transport=ws`, `path=${数量值545.path}`, `host=${数量值545.host}`, `over-tls=${数量值545.tls ? 'true' : 'false'}`];
+      const 部分列表544 = [`${数量值545.server}`, `${数量值545.port}`, `udp=false`, `username=${数量值545.uuid}`, `transport=ws`, `path=${数量值545.path}`, `host=${数量值545.host}`, `over-tls=${数量值545.tls ? 'true' : 'false'}`];
       if (数量值545.tls) {
         部分列表544.push(`tls-name=${数量值545.sni}`);
         if (数量值545.alpn && 数量值545.alpn.length) 部分列表544.push(`alpn=${数量值545.alpn.join(':')}`);
@@ -3491,7 +3491,7 @@ function 生成链接列表来源源(列表482, 用户481, 工作器域名480, �
   const 默认安全超文本值474 = [443];
   const 默认超文本值473 = 禁用非传输层安全 ? [] : [80];
   const 链接列表472 = [];
-  const 网页套接字路径471 = '/';
+  const 网页套接字路径471 = '/?ed=2048';
   const 协议470 = atob('dmxlc3M=');
   const 制作节点名称469 = 别名命名器477 || 创建值节点命名器(跳过编号478);
   for (const 项目468 of 列表482) {
@@ -3575,7 +3575,7 @@ async function 生成木马链接列表来源源(列表455, 用户454, 工作器
   const 默认安全超文本值 = [443];
   const 默认超文本值 = 禁用非传输层安全 ? [] : [80];
   const 链接列表447 = [];
-  const 网页套接字路径446 = '/';
+  const 网页套接字路径446 = '/?ed=2048';
   const 密码445 = 传输路径 || 用户454;
   const 制作节点名称444 = 别名命名器450 || 创建值节点命名器(跳过编号451);
   for (const 项目443 of 列表455) {
@@ -3766,6 +3766,7 @@ async function 处理网页套接字请求(请求417) {
     drainUpload: null
   };
   let 协议类型 = null;
+  let 域名系统处理器 = null;
   let 握手缓冲 = new Uint8Array(0);
   const 握手缓冲上限 = 16384;
   let 值值408 = false;
@@ -3824,6 +3825,10 @@ async function 处理网页套接字请求(请求417) {
     async write(块397) {
       if (传输值) return;
       const 数据396 = 处理值值8数组(块397);
+      if (域名系统处理器) {
+        await 域名系统处理器.write(数据396);
+        return;
+      }
       if (远程连接值409.socket && 远程连接值409.writer) {
         if (!处理队列值(数据396)) throw new Error('upload queue overflow');
         return;
@@ -3855,7 +3860,8 @@ async function 处理网页套接字请求(请求417) {
             const 原始数据389 = 握手数据.subarray(原始索引);
             握手缓冲 = new Uint8Array(0);
             if (是否用户数据报391) {
-              await 处理值域名系统连接(主机名393, 原始数据389, 值值410, 值头部390, 远程连接值409, 请求值407);
+              域名系统处理器 = 创建值域名系统处理器(值值410, 值头部390);
+              await 域名系统处理器.write(原始数据389);
             } else {
               await 处理值值384(地址类型395, 主机名393, 端口394, 原始数据389, 值值410, 值头部390, 远程连接值409, 请求回退416, 实际地区411, 请求值414, 请求代理配置413, 请求值407);
             }
@@ -4410,49 +4416,87 @@ async function 连接值279(远程套接字, 网页套接字278, 头部数据, �
   }
   if (!是否有数据 && !本地值276 && 重试值) 重试值();
 }
-async function 处理值域名系统连接(目标主机, 首包数据, 网页套接字, 值头部, 远程连接值, 请求值 = null) {
-  const 候选主机 = [];
-  const 规范目标 = 规范化目标地址(目标主机);
-  if (规范目标) 候选主机.push(规范目标);
-  if (!候选主机.includes('8.8.4.4')) 候选主机.push('8.8.4.4');
+function 提取值用户数据报帧(状态, 块) {
+  const 新数据 = 处理值值8数组(块);
+  let 数据 = 状态.buffer && 状态.buffer.byteLength ? 拼接值8数组(状态.buffer, 新数据) : 新数据.slice();
+  if (数据.byteLength > 262144) throw new Error('VLESS UDP buffer overflow');
+  const 数据报列表 = [];
+  let 偏移 = 0;
+  while (数据.byteLength - 偏移 >= 2) {
+    const 长度 = 数据[偏移] << 8 | 数据[偏移 + 1];
+    if (长度 <= 0) throw new Error('Invalid VLESS UDP frame length');
+    if (数据.byteLength - 偏移 - 2 < 长度) break;
+    数据报列表.push(数据.slice(偏移 + 2, 偏移 + 2 + 长度));
+    偏移 += 2 + 长度;
+  }
+  状态.buffer = 偏移 < 数据.byteLength ? 数据.slice(偏移) : new Uint8Array(0);
+  if (状态.buffer.byteLength > 65537) throw new Error('VLESS UDP frame is too large');
+  return 数据报列表;
+}
+function 封装值用户数据报响应(数据报, 值头部 = null) {
+  const 数据 = 处理值值8数组(数据报);
+  if (!数据.byteLength || 数据.byteLength > 65535) throw new Error('Invalid DNS response size');
+  const 头长度 = 值头部 ? 值头部.byteLength : 0;
+  const 输出 = new Uint8Array(头长度 + 2 + 数据.byteLength);
+  let 偏移 = 0;
+  if (值头部) {
+    输出.set(值头部, 0);
+    偏移 = 头长度;
+  }
+  输出[偏移] = 数据.byteLength >> 8 & 255;
+  输出[偏移 + 1] = 数据.byteLength & 255;
+  输出.set(数据, 偏移 + 2);
+  return 输出;
+}
+function 获取值域名系统端点列表() {
+  const 端点列表 = [];
+  const 自定义端点 = String(自定义域名系统 || '').trim();
+  if (/^https?:\/\//i.test(自定义端点)) 端点列表.push(自定义端点);
+  端点列表.push('https://1.1.1.1/dns-query', 'https://8.8.8.8/dns-query');
+  return [...new Set(端点列表)];
+}
+async function 查询值域名系统(查询数据) {
   let 最后错误 = null;
-
-  for (const 域名系统主机 of 候选主机) {
-    let 值套接字 = null;
-    let 写入器 = null;
+  for (const 端点 of 获取值域名系统端点列表()) {
     try {
-      值套接字 = await 连接值套接字(域名系统主机, 53, 请求值, 1);
-      写入器 = 值套接字.writable.getWriter();
-      const 首包 = 处理值值8数组(首包数据);
-      if (首包.byteLength) await 写入器.write(首包);
-
-      远程连接值.socket = 值套接字;
-      远程连接值.writer = 写入器;
-      远程连接值.drainUpload?.();
-
-      值套接字.closed.catch(() => {}).finally(() => {
-        if (远程连接值.socket === 值套接字) 关闭套接字值(网页套接字);
+      const 响应 = await fetch(端点, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/dns-message',
+          'accept': 'application/dns-message'
+        },
+        body: 查询数据
       });
-      连接值279(值套接字, 网页套接字, 值头部, null).finally(() => {
-        if (远程连接值.socket === 值套接字) {
-          try {
-            写入器?.releaseLock();
-          } catch (忽略值263) {}
-          远程连接值.writer = null;
-        }
-      });
-      return;
-    } catch (错误263) {
-      最后错误 = 错误263;
-      try {
-        写入器?.releaseLock();
-      } catch (忽略值262) {}
-      try {
-        值套接字?.close();
-      } catch (忽略值261) {}
+      if (!响应.ok) throw new Error(`DoH ${响应.status}`);
+      const 数据 = new Uint8Array(await 响应.arrayBuffer());
+      if (!数据.byteLength || 数据.byteLength > 65535) throw new Error('Invalid DoH response');
+      return 数据;
+    } catch (错误) {
+      最后错误 = 错误;
     }
   }
-  throw 最后错误 || new Error('DNS TCP connection failed');
+  throw 最后错误 || new Error('DNS over HTTPS failed');
+}
+function 创建值域名系统处理器(网页套接字, 值头部) {
+  const 状态 = { buffer: new Uint8Array(0) };
+  let 首次响应 = true;
+  let 顺序链 = Promise.resolve();
+  async function 处理块(块) {
+    const 数据报列表 = 提取值用户数据报帧(状态, 块);
+    for (const 查询数据 of 数据报列表) {
+      const 响应数据 = await 查询值域名系统(查询数据);
+      if (网页套接字.readyState !== 1) throw new Error(错误_网页套接字未打开);
+      const 响应帧 = 封装值用户数据报响应(响应数据, 首次响应 ? 值头部 : null);
+      首次响应 = false;
+      网页套接字.send(响应帧);
+    }
+  }
+  return {
+    write(块) {
+      顺序链 = 顺序链.then(() => 处理块(块));
+      return 顺序链;
+    }
+  };
 }
 async function 处理值代理连接(地址类型, 地址262, 端口261, 代理配置 = 已解析代理5配置, 请求值258 = null, 首包数据 = null) {
   // 按代理种类分派：隧道走建隧请求，其余保持套接字5 握手
@@ -7135,7 +7179,7 @@ function 收集界面配置() {
     s: 读取字段值('socksConfig'),
     homepage: 读取字段值('customHomepage'),
     scu: 读取字段值('scu'),
-    ena: 读取开关值('ena', false),
+    ena: 读取开关值('ena', true),
     epd: 读取开关值('epd', true),
     epi: 读取开关值('epi', true),
     egi: 读取开关值('egi', true),
@@ -9061,7 +9105,7 @@ function 生成链接列表来源新地址列表(列表100, 用户99, 工作器�
   const 云墙超文本端口94 = [80, 8080, 8880, 2052, 2082, 2086, 2095];
   const 云墙安全超文本端口93 = [443, 2053, 2083, 2087, 2096, 8443];
   const 链接列表92 = [];
-  const 网页套接字路径91 = '/';
+  const 网页套接字路径91 = '/?ed=2048';
   const 协议 = atob('dmxlc3M=');
   const 制作节点名称90 = 别名命名器95 || 创建值节点命名器(跳过编号96);
   for (const 项目89 of 列表100) {
@@ -9135,7 +9179,7 @@ async function 生成木马链接列表来源新地址列表(列表, 用户, 工
   const 云墙超文本端口 = [80, 8080, 8880, 2052, 2082, 2086, 2095];
   const 云墙安全超文本端口 = [443, 2053, 2083, 2087, 2096, 8443];
   const 链接列表 = [];
-  const 网页套接字路径 = '/';
+  const 网页套接字路径 = '/?ed=2048';
   const 密码 = 传输路径 || 用户;
   const 制作节点名称 = 别名命名器 || 创建值节点命名器(跳过编号);
   for (const 项目62 of 列表) {
