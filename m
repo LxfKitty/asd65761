@@ -667,7 +667,8 @@ const 远程配置网址 = 'https://raw.githubusercontent.com/byJoey/test/refs/h
 let 启用优选域名 = true; // 优选域名默认关闭
 let 启用优选地址 = true;
 let 启用仓库优选 = true;
-let 启用原生地址 = true; // 原生地址默认开启：作为优选IP/域名失效时的稳定回退          
+let 启用原生地址 = true; // 原生地址默认开启：作为优选IP/域名失效时的稳定回退
+let 启用BestCF智能优选 = true;
 
 let 键值存储 = null;
 let 键值配置 = {};
@@ -701,10 +702,13 @@ const 配置默认值 = {
   dkby: 'no',
   yxby: '',
   ipv4: 'yes',
-  ipv6: 'yes',
+  ipv6: 'no',
   ispMobile: 'yes',
   ispUnicom: 'yes',
-  ispTelecom: 'yes'
+  ispTelecom: 'yes',
+  bestcfAuto: 'yes',
+  bestcfRefresh: '15',
+  bestcfTarget: '36'
 };
 
 function 是否开启值(值, 默认启用 = false) {
@@ -735,7 +739,7 @@ function 整理有效配置(配置) {
     ...配置默认值,
     ...配置
   };
-  ['ev', 'et', 'ex', 'ech', 'ena', 'epd', 'epi', 'egi', 'ipv4', 'ipv6', 'ispMobile', 'ispUnicom', 'ispTelecom'].forEach(键 => {
+  ['ev', 'et', 'ex', 'ech', 'ena', 'epd', 'epi', 'egi', 'ipv4', 'ipv6', 'ispMobile', 'ispUnicom', 'ispTelecom', 'bestcfAuto'].forEach(键 => {
     快照[键] = 归一配置开关(快照[键], 是否开启值(配置默认值[键]));
   });
   if (快照.ev === 'no' && 快照.et === 'no' && 快照.ex === 'no') {
@@ -788,7 +792,10 @@ function 获取环境配置快照(环境值 = {}) {
     ipv6: ['ipv6', 'IPV6'],
     ispMobile: ['ispMobile', 'ISPMOBILE', 'ISP_MOBILE'],
     ispUnicom: ['ispUnicom', 'ISPUNICOM', 'ISP_UNICOM'],
-    ispTelecom: ['ispTelecom', 'ISPTELECOM', 'ISP_TELECOM']
+    ispTelecom: ['ispTelecom', 'ISPTELECOM', 'ISP_TELECOM'],
+    bestcfAuto: ['bestcfAuto', 'BESTCFAUTO', 'BESTCF_AUTO'],
+    bestcfRefresh: ['bestcfRefresh', 'BESTCFREFRESH', 'BESTCF_REFRESH'],
+    bestcfTarget: ['bestcfTarget', 'BESTCFTARGET', 'BESTCF_TARGET']
   };
   const 快照 = {};
   for (const [键, 名称列表] of Object.entries(映射)) {
@@ -1030,7 +1037,7 @@ function 处理值节点别名部分(值785, 回退 = 'Node') {
 function 获取值节点别名基础(项目783) {
   const 主机782 = 规范化节点主机(项目783?.ip || 项目783?.domain || '');
   if (主机782 && 主机782.includes(':') && /^[0-9a-fA-F:.]+$/.test(主机782)) return 'IPv6优选';
-  if (主机782 && !是否有效地址(主机782)) return '优选域名';
+  if (主机782 && !是否有效地址(主机782)) return 处理值节点别名部分(项目783?.name || 项目783?.isp || '', '优选域名');
   const 本地值781 = 处理值节点别名部分(项目783?.isp || 项目783?.name || '', 'IPv4优选');
   const 机房780 = 处理值节点别名部分(项目783?.colo || '', '');
   return 机房780 ? `${本地值781}-${机房780}` : 本地值781;
@@ -1343,6 +1350,10 @@ export default {
           自定义优选地址列表 = [];
           自定义优选域名列表 = [];
         }
+      } else {
+        // 配置中已移除 yx 时必须清空 isolate 内的旧值，避免旧自定义节点污染智能精选结果。
+        自定义优选地址列表 = [];
+        自定义优选域名列表 = [];
       }
       const 值控制711 = 获取配置文本值('qj', 配置默认值.qj, 本地值734.qj || 本地值734.QJ);
       const 值控制711值 = (值控制711 || '').toLowerCase();
@@ -1382,6 +1393,11 @@ export default {
         启用明文 = true;
       }
       优选地址源 = 获取配置文本值('yxURL', 配置默认值.yxURL, 本地值734.yxURL || 本地值734.YXURL);
+      启用BestCF智能优选 = 获取配置开关值('bestcfAuto', true, 本地值734.bestcfAuto || 本地值734.BESTCF_AUTO);
+      if (!是否网页套接字 && !自定义优选 && 启用BestCF智能优选) {
+        const 预热任务 = BestCF预热智能缓存(本地值733, 本地值734);
+        if (!本地值733 || typeof 本地值733.waitUntil !== 'function') await 预热任务;
+      }
       自定义路径 = 获取配置文本值('d', 配置默认值.d, 本地值734.d || 本地值734.D);
       const 网址698 = new URL(请求735.url);
       if (网址698.pathname.includes('/api/config')) {
@@ -2246,7 +2262,7 @@ document.addEventListener('DOMContentLoaded', function () {
             return await 处理订阅值(请求735, 认证令牌);
           }
           if (规范化路径 === 规范化自定义路径 + '/sub') {
-            return await 处理订阅请求(请求735, 认证令牌, 网址698);
+            return await 处理订阅请求(请求735, 认证令牌, 网址698, 本地值733, 本地值734);
           }
           if (网址698.pathname.length > 1 && 网址698.pathname !== '/') {
             const 用户658 = 网址698.pathname.replace(/\/$/, '').replace('/sub', '').substring(1);
@@ -2286,7 +2302,7 @@ document.addEventListener('DOMContentLoaded', function () {
               const 用户656 = 路径部分列表[0].substring(1);
               if (是否有效格式(用户656)) {
                 if (用户656 === 认证令牌) {
-                  return await 处理订阅请求(请求735, 用户656, 网址698);
+                  return await 处理订阅请求(请求735, 用户656, 网址698, 本地值733, 本地值734);
                 } else {
                   return new Response(JSON.stringify({
                     error: 'UUID错误'
@@ -2302,7 +2318,7 @@ document.addEventListener('DOMContentLoaded', function () {
           }
         }
         if (网址698.pathname.toLowerCase().includes(`/${值路径}`)) {
-          return await 处理订阅请求(请求735, 认证令牌);
+          return await 处理订阅请求(请求735, 认证令牌, null, 本地值733, 本地值734);
         }
       }
       return new Response(JSON.stringify({
@@ -2317,6 +2333,19 @@ document.addEventListener('DOMContentLoaded', function () {
       return new Response(错误655.toString(), {
         status: 500
       });
+    }
+  },
+  async scheduled(控制器, 环境值, 上下文) {
+    try {
+      await 处理值键值值(环境值 || {});
+      await 加载键值配置(true);
+      const 配置 = 获取BestCF智能配置(环境值);
+      if (!配置.enabled) return;
+      const 缓存 = await BestCF读取智能缓存();
+      if (缓存 && 缓存.configSignature === 获取BestCF智能配置签名(配置) && Date.now() < Number(缓存.expiresAt || 0)) return;
+      await BestCF执行智能刷新(配置);
+    } catch (错误) {
+      console.log('BestCF scheduled refresh failed:', 错误?.message || String(错误));
     }
   }
 };
@@ -3285,7 +3314,7 @@ async function 获取加密客户端问候配置(域名522) {
     return null;
   }
 }
-async function 处理订阅请求(请求507, 用户506, 网址505 = null) {
+async function 处理订阅请求(请求507, 用户506, 网址505 = null, 上下文 = null, 环境值 = {}) {
   if (!网址505) 网址505 = new URL(请求507.url);
   const 最终链接列表 = [];
   const 工作器域名504 = 网址505.hostname;
@@ -3354,69 +3383,58 @@ async function 处理订阅请求(请求507, 用户506, 网址505 = null) {
     if (自定义优选域名列表.length > 0 && 启用优选域名) {
       const 自定义域名列表 = 自定义优选域名列表.map(丁值492 => ({
         ip: 丁值492.domain,
+        port: 丁值492.port || 443,
+        name: 丁值492.name || 丁值492.domain,
         isp: 丁值492.name || 丁值492.domain
       }));
       await 添加节点列表来源列表(自定义域名列表);
     }
   } else {
-    if (启用优选域名) {
-      const 域名列表 = 直连域名列表.map(丁值491 => ({
-        ip: 丁值491.domain,
-        isp: 丁值491.name || 丁值491.domain
-      }));
-      await 添加节点列表来源列表(域名列表);
+    const 当前启用BestCF智能 = 获取配置开关值('bestcfAuto', true);
+    let 智能结果 = null;
+    if (当前启用BestCF智能) {
+      智能结果 = await 获取BestCF智能优选结果(上下文, false, 环境值);
     }
-    if (启用优选地址) {
-      if (!优选地址源) {
+    if (智能结果) {
+      if (启用优选域名 && Array.isArray(智能结果.domainList) && 智能结果.domainList.length > 0) {
+        const 域名列表 = 智能结果.domainList.map(项目 => ({
+          ip: 项目.domain,
+          port: 项目.port || 443,
+          name: 项目.name || '域名精选',
+          isp: 项目.name || '域名精选'
+        }));
+        await 添加节点列表来源列表(域名列表);
+      }
+      if (启用优选地址 && Array.isArray(智能结果.ipList) && 智能结果.ipList.length > 0) {
+        await 添加节点列表来源列表(智能结果.ipList);
+      }
+    } else {
+      // 智能源全部不可用时，保留旧逻辑作为最后兜底，不让订阅变空。
+      if (启用优选域名 && !优选地址源) {
+        const 域名列表 = 直连域名列表.map(丁值491 => ({
+          ip: 丁值491.domain,
+          port: 丁值491.port || 443,
+          isp: 丁值491.name || 丁值491.domain
+        }));
+        await 添加节点列表来源列表(域名列表);
+      }
+      if (启用优选地址 && !优选地址源) {
         try {
           const 值地址列表490 = await 获取值地址列表();
-          if (值地址列表490.length > 0) {
-            await 添加节点列表来源列表(值地址列表490);
-          }
-        } catch (错误489) {
-          if (!当前工作器地区) {
-            当前工作器地区 = await 检测工作器地区(请求507);
-          }
-          const 值备用地址488 = await 获取值备用地址(当前工作器地区);
-          if (值备用地址488) {
-            回退地址 = 值备用地址488.domain + ':' + 值备用地址488.port;
-            const 备用列表487 = [{
-              ip: 值备用地址488.domain,
-              isp: 解码64('UHJveHlJUC0=') + 当前工作器地区
-            }];
-            await 添加节点列表来源列表(备用列表487);
-          }
-        }
+          if (值地址列表490.length > 0) await 添加节点列表来源列表(值地址列表490);
+        } catch (错误489) {}
       }
     }
-    if (启用仓库优选) {
+    // yxURL 是用户显式指定的数据源：保留原功能，并与内置智能源互斥，避免重复和不可预测数量。
+    if (启用仓库优选 && 优选地址源 && (!当前启用BestCF智能 || !智能结果)) {
       try {
         const 新地址列表 = await 获取值解析新地址列表();
         if (新地址列表.length > 0) {
-          if (启用明文) {
-            最终链接列表.push(...生成链接列表来源新地址列表(新地址列表, 用户506, 工作器域名504, 加密客户端问候配置501, false, 别名命名器502));
-          }
-          if (启用木马) {
-            最终链接列表.push(...(await 生成木马链接列表来源新地址列表(新地址列表, 用户506, 工作器域名504, 加密客户端问候配置501, false, 别名命名器502)));
-          }
-          if (启用扩展传输) {
-            最终链接列表.push(...生成扩展超文本链接列表来源源(新地址列表, 用户506, 工作器域名504, 加密客户端问候配置501, false, 别名命名器502));
-          }
+          if (启用明文) 最终链接列表.push(...生成链接列表来源新地址列表(新地址列表, 用户506, 工作器域名504, 加密客户端问候配置501, false, 别名命名器502));
+          if (启用木马) 最终链接列表.push(...(await 生成木马链接列表来源新地址列表(新地址列表, 用户506, 工作器域名504, 加密客户端问候配置501, false, 别名命名器502)));
+          if (启用扩展传输) 最终链接列表.push(...生成扩展超文本链接列表来源源(新地址列表, 用户506, 工作器域名504, 加密客户端问候配置501, false, 别名命名器502));
         }
-      } catch (错误486) {
-        if (!当前工作器地区) {
-          当前工作器地区 = await 检测工作器地区(请求507);
-        }
-        const 值备用地址485 = await 获取值备用地址(当前工作器地区);
-        if (值备用地址485) {
-          回退地址 = 值备用地址485.domain + ':' + 值备用地址485.port;
-          const 备用列表 = [{
-            ip: 值备用地址485.domain,
-            isp: 解码64('UHJveHlJUC0=') + 当前工作器地区
-          }];
-          await 添加节点列表来源列表(备用列表);
-        }
-      }
+      } catch (错误486) {}
     }
   }
   if (最终链接列表.length === 0) {
@@ -3651,6 +3669,405 @@ async function 生成木马链接列表来源源(列表455, 用户454, 工作器
   }
   return 链接列表447;
 }
+
+// ===== BestCF 智能优选 v3：多源聚合 / 自动评分 / KV缓存 / 后台刷新 =====
+const BESTCF_智能缓存键 = 'bestcf_smart_cache_v3';
+const BESTCF_智能缓存版本 = 3;
+const BESTCF_智能数据源 = Object.freeze({
+  uouin: 'https://bestcf.pages.dev/uouin/all.txt',
+  wetest: 'https://bestcf.pages.dev/wetest/ipv4.txt',
+  vvhan: 'https://bestcf.pages.dev/vvhan/ipv4.txt',
+  domainMini: 'https://bestcf.pages.dev/domain/mini.txt',
+  vps789: 'https://bestcf.pages.dev/vps789/top20.txt'
+});
+let BestCF智能内存缓存 = null;
+let BestCF智能刷新任务 = null;
+
+function BestCF限制整数(值, 默认值, 最小值, 最大值) {
+  const 数值 = parseInt(String(值 ?? '').trim(), 10);
+  if (!Number.isFinite(数值)) return 默认值;
+  return Math.max(最小值, Math.min(最大值, 数值));
+}
+
+function 获取BestCF智能配置(环境值 = {}) {
+  const 有效配置 = 获取有效配置快照(环境值);
+  const 刷新分钟 = BestCF限制整数(有效配置.bestcfRefresh, 15, 5, 120);
+  const 目标数量 = BestCF限制整数(有效配置.bestcfTarget, 36, 30, 40);
+  // 原生地址默认会同时生成 443(TLS) 与 80(非TLS) 两条；TLS-only/ECH 时只占 1 条。
+  // 这里预留原生节点名额，使“精选总节点目标”真正对应最终默认订阅的总节点数。
+  const 原生启用 = 是否开启值(有效配置.ena, true);
+  const 仅TLS = 是否开启值(有效配置.dkby, false) || 是否开启值(有效配置.ech, false);
+  const 原生预留数量 = 原生启用 ? (仅TLS ? 1 : 2) : 0;
+  const 智能名额 = Math.max(20, 目标数量 - 原生预留数量);
+  const 域名数量 = Math.max(6, Math.min(10, Math.round(智能名额 * 0.23)));
+  const IP数量 = Math.max(18, 智能名额 - 域名数量);
+  return {
+    enabled: 是否开启值(有效配置.bestcfAuto, true),
+    refreshMinutes: 刷新分钟,
+    targetCount: 目标数量,
+    nativeReserveCount: 原生预留数量,
+    domainCount: 域名数量,
+    ipCount: IP数量,
+    ipv4: 是否开启值(有效配置.ipv4, true),
+    ipv6: 是否开启值(有效配置.ipv6, false),
+    ispMobile: 是否开启值(有效配置.ispMobile, true),
+    ispUnicom: 是否开启值(有效配置.ispUnicom, true),
+    ispTelecom: 是否开启值(有效配置.ispTelecom, true)
+  };
+}
+
+function 获取BestCF智能配置签名(配置) {
+  return [BESTCF_智能缓存版本, 配置.targetCount, 配置.nativeReserveCount, 配置.domainCount, 配置.ipCount, 配置.ipv4 ? 1 : 0, 配置.ipv6 ? 1 : 0, 配置.ispMobile ? 1 : 0, 配置.ispUnicom ? 1 : 0, 配置.ispTelecom ? 1 : 0].join('|');
+}
+
+async function BestCF抓取文本(网址, 超时 = 6000) {
+  const 控制器 = new AbortController();
+  const 计时器 = setTimeout(() => 控制器.abort(), 超时);
+  try {
+    const 响应 = await fetch(网址, {
+      signal: 控制器.signal,
+      headers: { 'Accept': 'text/plain,*/*;q=0.8', 'User-Agent': 'CFnew-BestCF-Smart/3' }
+    });
+    if (!响应.ok) throw new Error(`HTTP ${响应.status}`);
+    return await 响应.text();
+  } finally {
+    clearTimeout(计时器);
+  }
+}
+
+function BestCF识别运营商(文本) {
+  const 值 = String(文本 || '');
+  if (值.includes('移动') || /\bCMCC\b/i.test(值)) return '移动';
+  if (值.includes('联通') || /\bUNICOM\b|\bCU\b/i.test(值)) return '联通';
+  if (值.includes('电信') || /\bTELECOM\b|\bCT\b/i.test(值)) return '电信';
+  if (值.includes('多线') || 值.includes('三网') || 值.includes('通用')) return '多线';
+  return '';
+}
+
+function BestCF解析通用行(原始行, 来源, 排名 = 0) {
+  const 行 = String(原始行 || '').trim();
+  if (!行 || 行.startsWith('//') || 行.startsWith(';')) return null;
+  const 匹配 = 行.match(/^(\[[^\]]+\]|[^:#\s]+)(?::(\d+))?(?:#(.*))?$/);
+  if (!匹配) return null;
+  const 主机 = 匹配[1].replace(/^\[|\]$/g, '').trim();
+  const 端口 = parseInt(匹配[2] || '443', 10);
+  const 备注 = String(匹配[3] || '').trim();
+  if (!主机 || !Number.isFinite(端口) || 端口 < 1 || 端口 > 65535) return null;
+  if (![443, 8443].includes(端口)) return null;
+  const 是IP = 是否有效地址(主机);
+  const 是IPv6 = 是IP && 主机.includes(':');
+  if (是IPv6) return null; // v3 默认精选IPv4；IPv6继续由原有高级开关/自定义源处理
+  const 是域名 = !是IP && 是否有效域名(主机);
+  if (!是IP && !是域名) return null;
+  const 运营商 = BestCF识别运营商(备注);
+  if (是IP && /BestCF\.pages\.dev/i.test(备注) && !运营商) return null; // 去掉每个源的头尾说明IP
+  const 延迟匹配 = 备注.match(/([0-9]+(?:\.[0-9]+)?)\s*ms\b/i);
+  const 速度匹配 = 备注.match(/([0-9]+(?:\.[0-9]+)?)\s*(?:mb\/s|mbps|mib\/s)\b/i);
+  const 段 = 备注.split('|').map(值 => 值.trim()).filter(Boolean);
+  const 机房 = 段.find(值 => /^(HKG|SIN|SJC|LAX|NRT|KIX|FRA|AMS|LHR|SEA|IAD|DFW|ORD|MIA|CDG|Default)$/i.test(值)) || '';
+  return {
+    host: 主机,
+    port: 端口,
+    comment: 备注,
+    type: 是IP ? 'ip' : 'domain',
+    isp: 运营商,
+    colo: 机房 === 'Default' ? '' : 机房.toUpperCase(),
+    latency: 延迟匹配 ? parseFloat(延迟匹配[1]) : null,
+    speed: 速度匹配 ? parseFloat(速度匹配[1]) : null,
+    source: 来源,
+    rank: 排名
+  };
+}
+
+function BestCF解析文本(文本, 来源) {
+  return String(文本 || '').replace(/\r/g, '').split('\n').map((行, 索引) => BestCF解析通用行(行, 来源, 索引)).filter(Boolean);
+}
+
+function BestCF计算IP评分(项目) {
+  let 分数 = 0;
+  const 来源集合 = new Set(项目.sources || []);
+  if (来源集合.has('uouin')) 分数 += 42;
+  if (来源集合.has('wetest')) 分数 += 30;
+  if (来源集合.has('vvhan')) 分数 += 24;
+  分数 += 项目.port === 443 ? 10 : 4;
+  if (项目.speed !== null && 项目.speed !== undefined) {
+    if (项目.speed >= 20) 分数 += 45;
+    else if (项目.speed >= 10) 分数 += 36;
+    else if (项目.speed >= 5) 分数 += 28;
+    else if (项目.speed >= 2) 分数 += 18;
+    else 分数 -= 35;
+  }
+  if (项目.latency !== null && 项目.latency !== undefined) {
+    if (项目.latency <= 80) 分数 += 25;
+    else if (项目.latency <= 120) 分数 += 18;
+    else if (项目.latency <= 180) 分数 += 10;
+    else if (项目.latency <= 250) 分数 += 2;
+    else 分数 -= 20;
+  }
+  if (来源集合.size > 1) 分数 += 15 * (来源集合.size - 1);
+  if ((项目.isps || []).some(值 => ['移动', '联通', '电信'].includes(值))) 分数 += 5;
+  const 机房集合 = new Set(项目.colos || []);
+  if (机房集合.has('HKG')) 分数 += 8;
+  else if (机房集合.has('SIN')) 分数 += 6;
+  else if (机房集合.has('NRT') || 机房集合.has('KIX')) 分数 += 4;
+  else if (机房集合.has('SJC') || 机房集合.has('LAX')) 分数 += 2;
+  return 分数;
+}
+
+function BestCF合并IP候选(记录列表) {
+  const 映射 = new Map();
+  for (const 记录 of 记录列表) {
+    if (记录.type !== 'ip' || 记录.host.includes(':')) continue;
+    const 键 = `${记录.host}:${记录.port}`;
+    let 项目 = 映射.get(键);
+    if (!项目) {
+      项目 = { ip: 记录.host, port: 记录.port, isps: [], colos: [], sources: [], latency: null, speed: null, score: 0 };
+      映射.set(键, 项目);
+    }
+    if (记录.isp && !项目.isps.includes(记录.isp)) 项目.isps.push(记录.isp);
+    if (记录.colo && !项目.colos.includes(记录.colo)) 项目.colos.push(记录.colo);
+    if (!项目.sources.includes(记录.source)) 项目.sources.push(记录.source);
+    if (Number.isFinite(记录.latency)) 项目.latency = 项目.latency === null ? 记录.latency : Math.min(项目.latency, 记录.latency);
+    if (Number.isFinite(记录.speed)) 项目.speed = 项目.speed === null ? 记录.speed : Math.max(项目.speed, 记录.speed);
+  }
+  const 列表 = Array.from(映射.values());
+  for (const 项目 of 列表) 项目.score = BestCF计算IP评分(项目);
+  return 列表.filter(项目 => {
+    if (项目.latency !== null && 项目.latency > 350) return false;
+    if (项目.speed !== null && 项目.speed < 2 && 项目.sources.length === 1 && 项目.sources[0] === 'uouin') return false;
+    return 项目.score >= 35;
+  }).sort((甲, 乙) => 乙.score - 甲.score || (乙.speed || 0) - (甲.speed || 0) || (甲.latency ?? 9999) - (乙.latency ?? 9999));
+}
+
+function BestCFIPv4网段键(IP) {
+  const 部分 = String(IP || '').split('.');
+  return 部分.length === 4 ? 部分.slice(0, 3).join('.') : IP;
+}
+
+function BestCF选择IP(候选列表, 配置) {
+  if (!配置.ipv4) return [];
+  const 运营商列表 = [];
+  if (配置.ispMobile) 运营商列表.push('移动');
+  if (配置.ispUnicom) 运营商列表.push('联通');
+  if (配置.ispTelecom) 运营商列表.push('电信');
+  if (运营商列表.length === 0) return [];
+  const 已选键 = new Set();
+  const 网段计数 = new Map();
+  const 结果 = [];
+  const 目标 = 配置.ipCount;
+  const 基础配额 = Math.floor(目标 / 运营商列表.length);
+  let 余数 = 目标 % 运营商列表.length;
+
+  function 尝试加入(项目, 标签, 网段上限) {
+    const 键 = `${项目.ip}:${项目.port}`;
+    if (已选键.has(键)) return false;
+    const 网段 = BestCFIPv4网段键(项目.ip);
+    if ((网段计数.get(网段) || 0) >= 网段上限) return false;
+    已选键.add(键);
+    网段计数.set(网段, (网段计数.get(网段) || 0) + 1);
+    const 机房 = 项目.colos?.[0] || '';
+    结果.push({
+      ip: 项目.ip,
+      port: 项目.port,
+      isp: `${标签}精选`,
+      colo: 机房,
+      score: 项目.score,
+      speed: 项目.speed,
+      latency: 项目.latency,
+      sources: 项目.sources
+    });
+    return true;
+  }
+
+  for (const 运营商 of 运营商列表) {
+    const 配额 = 基础配额 + (余数-- > 0 ? 1 : 0);
+    const 专线候选 = 候选列表.filter(项目 => 项目.isps.includes(运营商));
+    const 多线候选 = 候选列表.filter(项目 => 项目.isps.includes('多线'));
+    const 开始数 = 结果.length;
+    for (const 项目 of 专线候选) {
+      if (结果.length - 开始数 >= 配额) break;
+      尝试加入(项目, 运营商, 2);
+    }
+    if (结果.length - 开始数 < 配额) {
+      for (const 项目 of 专线候选) {
+        if (结果.length - 开始数 >= 配额) break;
+        尝试加入(项目, 运营商, 4);
+      }
+    }
+    if (结果.length - 开始数 < 配额) {
+      for (const 项目 of 多线候选) {
+        if (结果.length - 开始数 >= 配额) break;
+        尝试加入(项目, '通用', 3);
+      }
+    }
+  }
+
+  if (结果.length < 目标) {
+    const 可用全集 = 候选列表.filter(项目 => 项目.isps.includes('多线') || 项目.isps.some(值 => 运营商列表.includes(值)));
+    for (const 项目 of 可用全集) {
+      if (结果.length >= 目标) break;
+      const 标签 = 项目.isps.find(值 => 运营商列表.includes(值)) || '通用';
+      尝试加入(项目, 标签, 3);
+    }
+  }
+  if (结果.length < 目标) {
+    for (const 项目 of 候选列表) {
+      if (结果.length >= 目标) break;
+      const 标签 = 项目.isps.find(值 => 运营商列表.includes(值)) || '通用';
+      尝试加入(项目, 标签, 6);
+    }
+  }
+  return 结果.slice(0, 目标);
+}
+
+function BestCF域名族键(域名) {
+  const 部分 = String(域名 || '').toLowerCase().split('.').filter(Boolean);
+  if (部分.length <= 3) return 部分.join('.');
+  return 部分.slice(-3).join('.');
+}
+
+function BestCF选择域名(记录列表, 数量) {
+  const 映射 = new Map();
+  for (const 记录 of 记录列表) {
+    if (记录.type !== 'domain' || 记录.port !== 443) continue;
+    const 键 = `${记录.host.toLowerCase()}:${记录.port}`;
+    let 项目 = 映射.get(键);
+    if (!项目) {
+      项目 = { domain: 记录.host.toLowerCase(), port: 记录.port, sources: [], score: 0, bestRank: 9999 };
+      映射.set(键, 项目);
+    }
+    if (!项目.sources.includes(记录.source)) 项目.sources.push(记录.source);
+    项目.bestRank = Math.min(项目.bestRank, 记录.rank || 9999);
+  }
+  const 候选 = Array.from(映射.values()).map(项目 => {
+    let 分数 = 0;
+    if (项目.sources.includes('vps789')) 分数 += Math.max(28, 64 - Math.min(20, 项目.bestRank) * 1.6);
+    if (项目.sources.includes('domainMini')) 分数 += 46;
+    if (项目.sources.length > 1) 分数 += 22;
+    项目.score = 分数;
+    return 项目;
+  }).sort((甲, 乙) => 乙.score - 甲.score || 甲.bestRank - 乙.bestRank || 甲.domain.localeCompare(乙.domain));
+  const 结果 = [];
+  const 族计数 = new Map();
+  for (const 项目 of 候选) {
+    if (结果.length >= 数量) break;
+    const 族 = BestCF域名族键(项目.domain);
+    if ((族计数.get(族) || 0) >= 2) continue;
+    族计数.set(族, (族计数.get(族) || 0) + 1);
+    结果.push({ domain: 项目.domain, port: 项目.port, name: '域名精选', score: 项目.score, sources: 项目.sources });
+  }
+  return 结果;
+}
+
+async function BestCF读取智能缓存() {
+  if (BestCF智能内存缓存 && BestCF智能内存缓存.version === BESTCF_智能缓存版本) return BestCF智能内存缓存;
+  if (!键值存储) return null;
+  try {
+    const 文本 = await 键值存储.get(BESTCF_智能缓存键);
+    if (!文本) return null;
+    const 数据 = JSON.parse(文本);
+    if (!数据 || 数据.version !== BESTCF_智能缓存版本) return null;
+    BestCF智能内存缓存 = 数据;
+    return 数据;
+  } catch (错误) {
+    return null;
+  }
+}
+
+async function BestCF写入智能缓存(数据) {
+  BestCF智能内存缓存 = 数据;
+  if (!键值存储) return;
+  try {
+    await 键值存储.put(BESTCF_智能缓存键, JSON.stringify(数据));
+  } catch (错误) {}
+}
+
+async function BestCF执行智能刷新(配置 = 获取BestCF智能配置({})) {
+  if (BestCF智能刷新任务) return BestCF智能刷新任务;
+  BestCF智能刷新任务 = (async () => {
+    const 定义 = [
+      ['uouin', BESTCF_智能数据源.uouin],
+      ['wetest', BESTCF_智能数据源.wetest],
+      ['vvhan', BESTCF_智能数据源.vvhan],
+      ['domainMini', BESTCF_智能数据源.domainMini],
+      ['vps789', BESTCF_智能数据源.vps789]
+    ];
+    const 状态 = {};
+    const 所有记录 = [];
+    const 结果 = await Promise.allSettled(定义.map(async ([名称, 网址]) => {
+      const 文本 = await BestCF抓取文本(网址);
+      return { 名称, 记录: BestCF解析文本(文本, 名称) };
+    }));
+    结果.forEach((项目, 索引) => {
+      const 名称 = 定义[索引][0];
+      if (项目.status === 'fulfilled') {
+        状态[名称] = { ok: true, count: 项目.value.记录.length };
+        所有记录.push(...项目.value.记录);
+      } else {
+        状态[名称] = { ok: false, count: 0, error: String(项目.reason?.message || 项目.reason || 'fetch failed').slice(0, 120) };
+      }
+    });
+    const IP候选 = BestCF合并IP候选(所有记录);
+    const IP列表 = BestCF选择IP(IP候选, 配置);
+    const 域名列表 = BestCF选择域名(所有记录, 配置.domainCount);
+    const 最小IP数量 = Math.min(18, 配置.ipCount);
+    if (IP列表.length < 最小IP数量 || 域名列表.length < 4) {
+      throw new Error(`BestCF候选不足: ip=${IP列表.length}, domain=${域名列表.length}`);
+    }
+    const 当前 = Date.now();
+    const 数据 = {
+      version: BESTCF_智能缓存版本,
+      configSignature: 获取BestCF智能配置签名(配置),
+      updatedAt: 当前,
+      expiresAt: 当前 + 配置.refreshMinutes * 60 * 1000,
+      refreshMinutes: 配置.refreshMinutes,
+      targetCount: 配置.targetCount,
+      ipList: IP列表,
+      domainList: 域名列表,
+      sourceStatus: 状态
+    };
+    await BestCF写入智能缓存(数据);
+    return 数据;
+  })();
+  try {
+    return await BestCF智能刷新任务;
+  } finally {
+    BestCF智能刷新任务 = null;
+  }
+}
+
+async function 获取BestCF智能优选结果(上下文 = null, 强制刷新 = false, 环境值 = {}) {
+  const 配置 = 获取BestCF智能配置(环境值);
+  if (!配置.enabled) return null;
+  const 签名 = 获取BestCF智能配置签名(配置);
+  const 缓存 = await BestCF读取智能缓存();
+  const 签名一致 = !!(缓存 && 缓存.configSignature === 签名);
+  if (!强制刷新 && 签名一致 && Date.now() < Number(缓存.expiresAt || 0)) return 缓存;
+  if (!强制刷新 && 签名一致 && 缓存 && Array.isArray(缓存.ipList) && 缓存.ipList.length > 0) {
+    const 刷新 = BestCF执行智能刷新(配置).catch(() => 缓存);
+    if (上下文 && typeof 上下文.waitUntil === 'function') {
+      上下文.waitUntil(刷新);
+      return 缓存;
+    }
+    return await 刷新;
+  }
+  try {
+    return await BestCF执行智能刷新(配置);
+  } catch (错误) {
+    if (缓存 && Array.isArray(缓存.ipList) && 缓存.ipList.length > 0) return 缓存;
+    return null;
+  }
+}
+
+async function BestCF预热智能缓存(上下文 = null, 环境值 = {}) {
+  const 配置 = 获取BestCF智能配置(环境值);
+  if (!配置.enabled) return;
+  const 任务 = 获取BestCF智能优选结果(上下文, false, 环境值).catch(() => null);
+  if (上下文 && typeof 上下文.waitUntil === 'function') 上下文.waitUntil(任务);
+  else await 任务;
+}
+// ===== BestCF 智能优选 v3 结束 =====
+
 async function 获取值地址列表() {
   const 值4网址1 = "https://www.wetest.vip/page/cloudflare/address_v4.html";
   const 值6网址1 = "https://www.wetest.vip/page/cloudflare/address_v6.html";
@@ -6273,6 +6690,21 @@ async function 处理订阅值(请求241, 用户240 = null) {
                         <div style="margin-bottom: 15px;">
                                 <label style="display: block; margin-bottom: 8px; color: #00f0ff; font-weight: bold; text-shadow: 0 0 3px #00f0ff;">优选IP筛选设置</label>
                             <div style="padding: 15px; background: rgba(15, 3, 40, 0.6); border: 1px solid #00f0ff; border-radius: 5px;">
+                                <div style="margin-bottom: 15px; padding: 12px; border: 1px dashed rgba(0,240,255,0.55); border-radius: 6px;">
+                                    <label style="display: inline-flex; align-items: center; cursor: pointer; color: #00f0ff; margin-bottom: 12px;">
+                                        <input type="checkbox" id="bestcfAuto" checked style="margin-right: 8px; width: 18px; height: 18px; cursor: pointer;">
+                                        <span style="font-size: 1rem; font-weight: bold;">BestCF 后台自动精选</span>
+                                    </label>
+                                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px;">
+                                        <label style="color: #7aa9c4; font-size: 0.9rem;">自动刷新间隔（分钟）
+                                            <input type="number" id="bestcfRefresh" min="5" max="120" step="5" value="15" style="margin-top: 6px; width: 100%; padding: 9px; background: rgba(0,0,0,.75); border: 1px solid #00f0ff; color: #00f0ff; border-radius: 4px;">
+                                        </label>
+                                        <label style="color: #7aa9c4; font-size: 0.9rem;">精选总节点目标（30-40）
+                                            <input type="number" id="bestcfTarget" min="30" max="40" step="1" value="36" style="margin-top: 6px; width: 100%; padding: 9px; background: rgba(0,0,0,.75); border: 1px solid #00f0ff; color: #00f0ff; border-radius: 4px;">
+                                        </label>
+                                    </div>
+                                    <small style="color: #7aa9c4; font-size: 0.82rem; display: block; margin-top: 10px; line-height: 1.5;">自动聚合 UOUIN / WeTest / vvHan / VPS789 / Domain Mini，按带宽、延迟、多源认可、运营商和网段多样性评分；结果写入KV缓存。默认约36个（含原生节点），质量不足时不强行塞入明显低速节点。</small>
+                                </div>
                                 <div style="margin-bottom: 15px;">
                                     <label style="display: block; margin-bottom: 8px; color: #00f0ff; font-weight: bold; text-shadow: 0 0 3px #00f0ff;">IP版本选择</label>
                                     <div style="display: flex; gap: 20px; flex-wrap: wrap;">
@@ -7147,6 +7579,9 @@ function 应用配置到界面(配置) {
   写入开关值('ispMobile', 配置.ispMobile, true);
   写入开关值('ispUnicom', 配置.ispUnicom, true);
   写入开关值('ispTelecom', 配置.ispTelecom, true);
+  写入开关值('bestcfAuto', 配置.bestcfAuto, true);
+  写入字段值('bestcfRefresh', 配置.bestcfRefresh || '15');
+  写入字段值('bestcfTarget', 配置.bestcfTarget || '36');
   写入字段值('customPath', 配置.d);
   写入字段值('customIP', 配置.p);
   写入字段值('yx', 配置.yx);
@@ -7192,7 +7627,10 @@ function 收集界面配置() {
     ipv6: 读取开关值('ipv6Enabled', true),
     ispMobile: 读取开关值('ispMobile', true),
     ispUnicom: 读取开关值('ispUnicom', true),
-    ispTelecom: 读取开关值('ispTelecom', true)
+    ispTelecom: 读取开关值('ispTelecom', true),
+    bestcfAuto: 读取开关值('bestcfAuto', true),
+    bestcfRefresh: 读取字段值('bestcfRefresh') || '15',
+    bestcfTarget: 读取字段值('bestcfTarget') || '36'
   };
   if (配置.ev === 'no' && 配置.et === 'no' && 配置.ex === 'no') {
     配置.ev = 'yes';
@@ -7379,6 +7817,9 @@ async function 重置全部配置() {
           egi: '',
           ipv4: '',
           ipv6: '',
+          bestcfAuto: '',
+          bestcfRefresh: '',
+          bestcfTarget: '',
           ispMobile: '',
           ispUnicom: '',
           ispTelecom: '',
@@ -9549,6 +9990,7 @@ function 更新配置值() {
     是否代理已启用 = false;
   }
   禁用优选 = !!(有效配置.yxby && 有效配置.yxby.toLowerCase() === 'yes');
+  启用BestCF智能优选 = 有效配置.bestcfAuto === 'yes';
 }
 function 更新自定义优选来源值() {
   const 值值30 = 获取配置值('yx', '');
