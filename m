@@ -1,5 +1,5 @@
 // CFnew - 终端 v2.9.9
-// 版本: v2.9.9 
+// 版本: v2.9.9 + SmartBestCF v3.2 ClashDiag 
 import { connect as 连接 } from 'cloudflare:sockets';
 
 // CFnew calm glass UI + mobile transport compatibility repair. UI/API behavior is preserved; WebSocket handshake and DNS transport are hardened.
@@ -2540,7 +2540,9 @@ function 解析值链接(链接603) {
         password: decodeURIComponent(网址599.username),
         server: 规范化值主机(网址599.hostname),
         port: parseInt(网址599.port) || 443,
-        tls: true,
+        // Trojan 的 security=none 分享链接在 Xray/v2ray 可表示明文，但 Mihomo Trojan/WS 实现走 TLS。
+        // 先准确记录原链接安全属性，Clash 输出阶段会过滤掉非 TLS Trojan。
+        tls: 参数值.get('security') !== 'none',
         network: 参数值.get('type') || 'ws',
         path: 参数值.get('path') || '/?ed=2048',
         host: 规范化值主机(参数值.get('host') || 网址599.hostname),
@@ -2559,7 +2561,7 @@ function 解析值链接(链接603) {
 function 规范化Clash客户端指纹(值) {
   const 原值 = String(值 || 'chrome').trim();
   const 小写 = 原值.toLowerCase();
-  if (小写 === 'randomized') return 'random';
+  if (小写 === 'randomized' || 小写 === 'random') return 'chrome';
   const 映射 = {
     chrome: 'chrome',
     firefox: 'firefox',
@@ -2574,22 +2576,25 @@ function 规范化Clash客户端指纹(值) {
   return 映射[小写] || 'chrome';
 }
 
-// Xray 常用 /?ed=2048 表示 WebSocket Early Data 提示；Mihomo 有独立的
-// max-early-data / early-data-header-name 参数。为避免 Cloudflare Worker 子协议协商差异，
-// Clash 输出采用最兼容模式：仅移除 ed 参数，其他 path/query 参数原样保留，首包在 WS 建连后发送。
-function 规范化Clash网页套接字路径(值) {
+// Xray 常用 /?ed=2048 表示 WebSocket Early Data。Mihomo 的 WebSocket 实现可以
+// 原生识别 path 中的 ed 参数并完成 Early Data 协商，因此这里保持与已验证可用的
+// v2rayN/v2rayNG 分享链接一致，不再擅自剥离 ?ed=2048。
+function 解析Clash网页套接字路径(值, 模式 = 'explicit') {
   let 文本 = String(值 || '/').trim() || '/';
   if (!文本.startsWith('/')) 文本 = '/' + 文本;
-  const 问号位置 = 文本.indexOf('?');
-  if (问号位置 < 0) return 文本;
-  const 基础路径 = 文本.slice(0, 问号位置) || '/';
   try {
-    const 查询 = new URLSearchParams(文本.slice(问号位置 + 1));
-    查询.delete('ed');
-    const 剩余 = 查询.toString();
-    return 剩余 ? `${基础路径}?${剩余}` : 基础路径;
-  } catch (错误) {
-    return 基础路径;
+    const u = new URL(文本, 'https://clash.local');
+    const edRaw = u.searchParams.get('ed');
+    const ed = /^\d+$/.test(String(edRaw || '')) ? Math.max(0, Math.min(65535, Number(edRaw))) : 0;
+    if (模式 !== 'query') u.searchParams.delete('ed');
+    const query = u.searchParams.toString();
+    const path = u.pathname + (query ? '?' + query : '');
+    if (模式 === 'off') return { path, ed: 0, explicit: false };
+    if (模式 === 'query') return { path: 文本, ed, explicit: false };
+    // 默认使用 Mihomo 文档中的显式字段，而不是依赖分享链接式 ?ed=2048。
+    return { path, ed, explicit: ed > 0 };
+  } catch (_) {
+    return { path: 文本, ed: 0, explicit: false };
   }
 }
 
@@ -2632,16 +2637,21 @@ function 构建值节点行(数量值596) {
     if (数量值596.alpn && 数量值596.alpn.length) {
       行列表595.push(`    alpn: [${数量值596.alpn.map(甲值591 => 处理本地值622(甲值591)).join(', ')}]`);
     }
-    行列表595.push(`    client-fingerprint: ${处理本地值622(Clash指纹)}`);
-    行列表595.push(`    skip-cert-verify: false`);
+    if (!数量值596.clashNoFingerprint) 行列表595.push(`    client-fingerprint: ${处理本地值622(Clash指纹)}`);
+    行列表595.push(`    skip-cert-verify: ${数量值596.clashSkipVerify ? 'true' : 'false'}`);
   }
 
   if (数量值596.network === 'ws' || 数量值596.network === 'xhttp') {
     行列表595.push(`    network: ws`);
     行列表595.push(`    ws-opts:`);
-    行列表595.push(`      path: ${处理本地值622(规范化Clash网页套接字路径(数量值596.path))}`);
+    const ws配置 = 解析Clash网页套接字路径(数量值596.path, 数量值596.clashEdMode || 'explicit');
+    行列表595.push(`      path: ${处理本地值622(ws配置.path)}`);
     行列表595.push(`      headers:`);
     行列表595.push(`        Host: ${处理本地值622(主机593)}`);
+    if (ws配置.explicit && ws配置.ed > 0) {
+      行列表595.push(`      max-early-data: ${ws配置.ed}`);
+      行列表595.push(`      early-data-header-name: Sec-WebSocket-Protocol`);
+    }
   } else if (数量值596.network === 'grpc') {
     行列表595.push(`    network: grpc`);
     行列表595.push(`    grpc-opts:`);
@@ -2657,12 +2667,73 @@ function 构建值节点行(数量值596) {
   return 行列表595.join('\n');
 }
 
+// Clash/Mihomo 无日志诊断配置：同一个原生节点生成若干握手矩阵，
+// 用“哪个节点能测出延迟”来定位 TLS / Early Data / 指纹 / 证书校验层。
+function 生成Clash诊断配置(链接列表) {
+  const 已解析 = 链接列表.map(解析值链接).filter(Boolean);
+  const 原生优先 = 节点 => String(节点?.name || '').includes('原生地址');
+  const vlessTLS = 已解析.find(n => n.proto === 'vless' && n.tls && 原生优先(n)) || 已解析.find(n => n.proto === 'vless' && n.tls);
+  const vlessPlain = 已解析.find(n => n.proto === 'vless' && !n.tls && 原生优先(n)) || 已解析.find(n => n.proto === 'vless' && !n.tls);
+  const trojanTLS = 已解析.find(n => n.proto === 'trojan' && n.tls && 原生优先(n)) || 已解析.find(n => n.proto === 'trojan' && n.tls);
+  const 诊断节点 = [];
+
+  function 复制(节点, 名称, 覆盖 = {}) {
+    if (!节点) return;
+    诊断节点.push({ ...节点, ...覆盖, name: 名称 });
+  }
+
+  // A 使用 Mihomo 文档的显式 ED 字段；B 完全关闭 ED；C 保留 Xray 分享链接式 ?ed=。
+  复制(vlessTLS, '诊断-A-TLS-显式ED-Chrome', { path: '/?ed=2048', clashEdMode: 'explicit', fp: 'chrome', clashSkipVerify: false, clashNoFingerprint: false });
+  复制(vlessTLS, '诊断-B-TLS-无ED-Chrome', { path: '/', clashEdMode: 'off', fp: 'chrome', clashSkipVerify: false, clashNoFingerprint: false });
+  复制(vlessTLS, '诊断-C-TLS-QueryED-Chrome', { path: '/?ed=2048', clashEdMode: 'query', fp: 'chrome', clashSkipVerify: false, clashNoFingerprint: false });
+  复制(vlessTLS, '诊断-D-TLS-显式ED-无指纹', { path: '/?ed=2048', clashEdMode: 'explicit', fp: '', clashSkipVerify: false, clashNoFingerprint: true });
+  复制(vlessTLS, '诊断-E-TLS-无ED-跳证书', { path: '/', clashEdMode: 'off', fp: '', clashSkipVerify: true, clashNoFingerprint: true });
+  复制(vlessPlain, '诊断-F-80明文-显式ED', { path: '/?ed=2048', clashEdMode: 'explicit', fp: '', clashNoFingerprint: true });
+  复制(vlessPlain, '诊断-G-80明文-无ED', { path: '/', clashEdMode: 'off', fp: '', clashNoFingerprint: true });
+  复制(trojanTLS, '诊断-H-Trojan-显式ED', { path: '/?ed=2048', clashEdMode: 'explicit', fp: 'chrome', clashSkipVerify: false, clashNoFingerprint: false });
+  复制(trojanTLS, '诊断-I-Trojan-无ED', { path: '/', clashEdMode: 'off', fp: 'chrome', clashSkipVerify: false, clashNoFingerprint: false });
+
+  if (!诊断节点.length) return 'mixed-port: 7890\nmode: global\nproxies: []\n';
+  const 行 = [
+    'mixed-port: 7890',
+    'allow-lan: true',
+    'mode: global',
+    'log-level: info',
+    'ipv6: false',
+    'unified-delay: true',
+    'tcp-concurrent: true',
+    'dns:',
+    '  enable: true',
+    '  ipv6: false',
+    '  enhanced-mode: redir-host',
+    '  nameserver:',
+    '    - 223.5.5.5',
+    '    - 119.29.29.29',
+    'proxies:'
+  ];
+  for (const 节点 of 诊断节点) 行.push(构建值节点行(节点));
+  行.push('proxy-groups:');
+  行.push('  - name: "🔬 Clash无日志诊断"');
+  行.push('    type: select');
+  行.push('    proxies:');
+  for (const 节点 of 诊断节点) 行.push(`      - ${处理本地值622(节点.name)}`);
+  行.push('rules:');
+  行.push('  - MATCH,"🔬 Clash无日志诊断"');
+  行.push('');
+  return 行.join('\n');
+}
+
 // 内部生成 YAML（完整规则集，远端 rule-providers）
 function 生成值值589(链接列表588, 本地值587 = {}) {
-  const 节点列表586 = 链接列表588.map(解析值链接).filter(数量值585 => 数量值585 && (数量值585.proto === 解码64('dmxlc3M=') || 数量值585.proto === 解码64('dHJvamFu')));
+  // Mihomo 当前 Trojan/WS 走 TLS；security=none 的 Trojan（例如 80 端口）不应输出给 Clash，
+  // 否则会被客户端按 TLS Trojan 连接到明文端口并直接 Error。VLESS 明文 WS 保留。
+  const 节点列表586 = 链接列表588.map(解析值链接).filter(数量值585 => 数量值585 && (
+    数量值585.proto === 解码64('dmxlc3M=') ||
+    (数量值585.proto === 解码64('dHJvamFu') && 数量值585.tls)
+  ));
   const 名称列表584 = 节点列表586.map(数量值583 => 数量值583.name);
   const 域名系统值582 = 自定义域名系统 || 'https://223.5.5.5/dns-query';
-  const 头部581 = ['mixed-port: 7890', 'allow-lan: true', 'mode: rule', 'log-level: info', 'ipv6: true', 'external-controller: 127.0.0.1:9090', 'unified-delay: true', 'tcp-concurrent: true', 'geodata-mode: true', 'geo-auto-update: true', 'geo-update-interval: 24', 'geox-url:', '  geoip: "https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat"', '  geosite: "https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat"', '  mmdb: "https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb"', '  asn: "https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb"', 'sniffer:', '  enable: true', '  force-dns-mapping: true', '  parse-pure-ip: true', '  sniff:', '    HTTP:', '      ports: [80, 8080-8880]', '      override-destination: true', '    TLS:', '      ports: [443, 8443]', '    QUIC:', '      ports: [443, 8443]', 'dns:', '  enable: true', '  listen: 0.0.0.0:1053', '  ipv6: true', '  enhanced-mode: fake-ip', '  fake-ip-range: 198.18.0.1/16', '  fake-ip-filter:', '    - "*.lan"', '    - "+.local"', '    - "+.market.xiaomi.com"', '    - "+.msftconnecttest.com"', '    - "+.msftncsi.com"', '    - "localhost.ptlogin2.qq.com"', '    - "+.srv.nintendo.net"', '    - "+.stun.playstation.net"', '    - "+.xboxlive.com"', '  default-nameserver:', '    - 223.5.5.5', '    - 119.29.29.29', '  nameserver:', `    - ${域名系统值582}`, '    - https://119.29.29.29/dns-query', '  fallback:', '    - https://1.1.1.1/dns-query', '    - https://8.8.8.8/dns-query', '  fallback-filter:', '    geoip: true', '    geoip-code: CN', '    ipcidr:', '      - 240.0.0.0/4', ''];
+  const 头部581 = ['mixed-port: 7890', 'allow-lan: true', 'mode: rule', 'log-level: info', 'ipv6: false', 'external-controller: 127.0.0.1:9090', 'unified-delay: true', 'tcp-concurrent: true', 'geodata-mode: true', 'geo-auto-update: true', 'geo-update-interval: 24', 'geox-url:', '  geoip: "https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat"', '  geosite: "https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat"', '  mmdb: "https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb"', '  asn: "https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb"', 'sniffer:', '  enable: true', '  force-dns-mapping: true', '  parse-pure-ip: true', '  sniff:', '    HTTP:', '      ports: [80, 8080-8880]', '      override-destination: true', '    TLS:', '      ports: [443, 8443]', '    QUIC:', '      ports: [443, 8443]', 'dns:', '  enable: true', '  listen: 0.0.0.0:1053', '  ipv6: false', '  enhanced-mode: fake-ip', '  fake-ip-range: 198.18.0.1/16', '  fake-ip-filter:', '    - "*.lan"', '    - "+.local"', '    - "+.market.xiaomi.com"', '    - "+.msftconnecttest.com"', '    - "+.msftncsi.com"', '    - "localhost.ptlogin2.qq.com"', '    - "+.srv.nintendo.net"', '    - "+.stun.playstation.net"', '    - "+.xboxlive.com"', '  default-nameserver:', '    - 223.5.5.5', '    - 119.29.29.29', '  nameserver:', `    - ${域名系统值582}`, '    - https://119.29.29.29/dns-query', '  fallback:', '    - https://1.1.1.1/dns-query', '    - https://8.8.8.8/dns-query', '  fallback-filter:', '    geoip: true', '    geoip-code: CN', '    ipcidr:', '      - 240.0.0.0/4', ''];
   const 值值580 = ['proxies:'];
   for (const 数量值579 of 节点列表586) 值值580.push(构建值节点行(数量值579));
   const 节点仅 = 名称列表584.length ? 名称列表584.map(数量值578 => `      - ${处理本地值622(数量值578)}`).join('\n') : '      - DIRECT';
@@ -3501,6 +3572,11 @@ async function 处理订阅请求(请求507, 用户506, 网址505 = null, 上下
   let 订阅内容;
   let 内容类型483 = 'text/plain; charset=utf-8';
   switch (目标503.toLowerCase()) {
+    case 'clashdiag':
+    case 'mihomodiag':
+      订阅内容 = 生成Clash诊断配置(最终链接列表);
+      内容类型483 = 'text/yaml; charset=utf-8';
+      break;
     case atob('Y2xhc2g='):
     case atob('Y2xhc2hy'):
     case 解码64('c3Rhc2g='):
