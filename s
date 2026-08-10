@@ -2554,38 +2554,92 @@ function 解析值链接(链接603) {
   return null;
 }
 
-// 单个节点 → 块级 YAML（避免 flow style 解析错误）
+// Mihomo / Clash 专用兼容处理：Xray 分享链接中的 fp=randomized 在 Mihomo 中应为 random。
+// 当前 Mihomo 文档支持 chrome/firefox/safari/iOS/android/edge/360/qq/random。
+function 规范化Clash客户端指纹(值) {
+  const 原值 = String(值 || 'chrome').trim();
+  const 小写 = 原值.toLowerCase();
+  if (小写 === 'randomized') return 'random';
+  const 映射 = {
+    chrome: 'chrome',
+    firefox: 'firefox',
+    safari: 'safari',
+    ios: 'iOS',
+    android: 'android',
+    edge: 'edge',
+    '360': '360',
+    qq: 'qq',
+    random: 'random'
+  };
+  return 映射[小写] || 'chrome';
+}
+
+// Xray 常用 /?ed=2048 表示 WebSocket Early Data 提示；Mihomo 有独立的
+// max-early-data / early-data-header-name 参数。为避免 Cloudflare Worker 子协议协商差异，
+// Clash 输出采用最兼容模式：仅移除 ed 参数，其他 path/query 参数原样保留，首包在 WS 建连后发送。
+function 规范化Clash网页套接字路径(值) {
+  let 文本 = String(值 || '/').trim() || '/';
+  if (!文本.startsWith('/')) 文本 = '/' + 文本;
+  const 问号位置 = 文本.indexOf('?');
+  if (问号位置 < 0) return 文本;
+  const 基础路径 = 文本.slice(0, 问号位置) || '/';
+  try {
+    const 查询 = new URLSearchParams(文本.slice(问号位置 + 1));
+    查询.delete('ed');
+    const 剩余 = 查询.toString();
+    return 剩余 ? `${基础路径}?${剩余}` : 基础路径;
+  } catch (错误) {
+    return 基础路径;
+  }
+}
+
+// 单个节点 → 块级 YAML（Mihomo / Clash 兼容）
 function 构建值节点行(数量值596) {
   const 行列表595 = [];
   const 本地值594 = 规范化值主机(数量值596.server);
   const 主机593 = 规范化值主机(数量值596.host) || 本地值594;
   const 服务名称指示592 = 规范化值主机(数量值596.sni) || 主机593;
+  const 是VLESS = 数量值596.proto === 解码64('dmxlc3M=');
+  const 是Trojan = 数量值596.proto === 解码64('dHJvamFu');
+  const Clash指纹 = 规范化Clash客户端指纹(数量值596.fp || 'chrome');
+
   行列表595.push(`  - name: ${处理本地值622(数量值596.name)}`);
   行列表595.push(`    type: ${数量值596.proto}`);
   行列表595.push(`    server: ${处理本地值622(本地值594)}`);
   行列表595.push(`    port: ${数量值596.port}`);
-  if (数量值596.proto === 解码64('dmxlc3M=')) {
-    行列表595.push(`    uuid: ${数量值596.uuid}`);
+
+  if (是VLESS) {
+    行列表595.push(`    uuid: ${处理本地值622(数量值596.uuid)}`);
+    // Mihomo 当前 VLESS 配置支持 encryption 字段；本项目正常值为 none。
+    行列表595.push(`    encryption: ${处理本地值622(数量值596.encryption || 'none')}`);
     行列表595.push(`    udp: false`);
     行列表595.push(`    tls: ${数量值596.tls ? 'true' : 'false'}`);
     if (数量值596.flow) 行列表595.push(`    flow: ${处理本地值622(数量值596.flow)}`);
-    行列表595.push(`    client-fingerprint: ${处理本地值622(数量值596.fp || 'chrome')}`);
-  } else if (数量值596.proto === 解码64('dHJvamFu')) {
+  } else if (是Trojan) {
     行列表595.push(`    password: ${处理本地值622(数量值596.password)}`);
     行列表595.push(`    udp: false`);
-    行列表595.push(`    client-fingerprint: ${处理本地值622(数量值596.fp || 'chrome')}`);
+    // Mihomo Trojan 必须显式开启 TLS；旧转换器漏掉了这一行。
+    行列表595.push(`    tls: true`);
   }
-  if (数量值596.tls) {
-    行列表595.push(`    servername: ${处理本地值622(服务名称指示592)}`);
+
+  if (数量值596.tls || 是Trojan) {
+    if (是VLESS) {
+      行列表595.push(`    servername: ${处理本地值622(服务名称指示592)}`);
+    } else if (是Trojan) {
+      // Mihomo 文档中 VMess/VLESS 使用 servername，Trojan 使用 sni。
+      行列表595.push(`    sni: ${处理本地值622(服务名称指示592)}`);
+    }
     if (数量值596.alpn && 数量值596.alpn.length) {
       行列表595.push(`    alpn: [${数量值596.alpn.map(甲值591 => 处理本地值622(甲值591)).join(', ')}]`);
     }
+    行列表595.push(`    client-fingerprint: ${处理本地值622(Clash指纹)}`);
     行列表595.push(`    skip-cert-verify: false`);
   }
+
   if (数量值596.network === 'ws' || 数量值596.network === 'xhttp') {
     行列表595.push(`    network: ws`);
     行列表595.push(`    ws-opts:`);
-    行列表595.push(`      path: ${处理本地值622(数量值596.path)}`);
+    行列表595.push(`      path: ${处理本地值622(规范化Clash网页套接字路径(数量值596.path))}`);
     行列表595.push(`      headers:`);
     行列表595.push(`        Host: ${处理本地值622(主机593)}`);
   } else if (数量值596.network === 'grpc') {
@@ -2593,6 +2647,7 @@ function 构建值节点行(数量值596) {
     行列表595.push(`    grpc-opts:`);
     行列表595.push(`      grpc-service-name: ${处理本地值622(数量值596.path)}`);
   }
+
   if (数量值596.ech) {
     const 加密客户端问候域名590 = 自定义加密客户端问候域名 || 'cloudflare-ech.com';
     行列表595.push(`    ech-opts:`);
