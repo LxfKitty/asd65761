@@ -1,5 +1,5 @@
-// CFnew - 终端 v2.9.9
-// 版本: v2.9.9 + SmartBestCF v3.2 ClashDiag 
+// CFnew - 终端 v3.0.0
+// 版本: v3.0.0 + SmartBestCF v4 + AdaptiveLink + StableTransport 
 import { connect as 连接 } from 'cloudflare:sockets';
 
 // CFnew calm glass UI + mobile transport compatibility repair. UI/API behavior is preserved; WebSocket handshake and DNS transport are hardened.
@@ -708,7 +708,12 @@ const 配置默认值 = {
   ispTelecom: 'yes',
   bestcfAuto: 'yes',
   bestcfRefresh: '15',
-  bestcfTarget: '36'
+  bestcfTarget: '28',
+  adaptiveDial: 'no',
+  dialTimeout: '1400',
+  tcpRace: '2',
+  fallbackRace: '3',
+  uploadQueueMB: '8'
 };
 
 function 是否开启值(值, 默认启用 = false) {
@@ -739,7 +744,7 @@ function 整理有效配置(配置) {
     ...配置默认值,
     ...配置
   };
-  ['ev', 'et', 'ex', 'ech', 'ena', 'epd', 'epi', 'egi', 'ipv4', 'ipv6', 'ispMobile', 'ispUnicom', 'ispTelecom', 'bestcfAuto'].forEach(键 => {
+  ['ev', 'et', 'ex', 'ech', 'ena', 'epd', 'epi', 'egi', 'ipv4', 'ipv6', 'ispMobile', 'ispUnicom', 'ispTelecom', 'bestcfAuto', 'adaptiveDial'].forEach(键 => {
     快照[键] = 归一配置开关(快照[键], 是否开启值(配置默认值[键]));
   });
   if (快照.ev === 'no' && 快照.et === 'no' && 快照.ex === 'no') {
@@ -795,7 +800,12 @@ function 获取环境配置快照(环境值 = {}) {
     ispTelecom: ['ispTelecom', 'ISPTELECOM', 'ISP_TELECOM'],
     bestcfAuto: ['bestcfAuto', 'BESTCFAUTO', 'BESTCF_AUTO'],
     bestcfRefresh: ['bestcfRefresh', 'BESTCFREFRESH', 'BESTCF_REFRESH'],
-    bestcfTarget: ['bestcfTarget', 'BESTCFTARGET', 'BESTCF_TARGET']
+    bestcfTarget: ['bestcfTarget', 'BESTCFTARGET', 'BESTCF_TARGET'],
+    adaptiveDial: ['adaptiveDial', 'ADAPTIVEDIAL', 'ADAPTIVE_RACE_DIAL', 'PRELOAD_RACE_DIAL'],
+    dialTimeout: ['dialTimeout', 'DIALTIMEOUT', 'DIAL_TIMEOUT_MS'],
+    tcpRace: ['tcpRace', 'TCPRACE', 'TCP_CONCURRENT_DIAL'],
+    fallbackRace: ['fallbackRace', 'FALLBACKRACE', 'FALLBACK_CANDIDATES'],
+    uploadQueueMB: ['uploadQueueMB', 'UPLOADQUEUEMB', 'UPLOAD_QUEUE_MB']
   };
   const 快照 = {};
   for (const [键, 名称列表] of Object.entries(映射)) {
@@ -982,11 +992,34 @@ const 传输块大小 = 64 * 1024;
 const 传输下载包大小 = 32 * 1024;
 const 传输下载尾部 = 512;
 const 传输下载延迟 = 0;
-const 传输上传包大小 = 16 * 1024;
-const 传输上传队列上限 = 256 * 1024;
-const 传输连接竞速数 = 2;
+// GrainTCP/edgetunnel 的近期实践证明，小包合并与有界高水位队列比 256KB 的硬上限更适合长连接。
+// 这里采用更保守的 20KB + 默认 8MiB / 4096 项，兼顾突发流量与 Worker 内存占用。
+const 传输上传包大小 = 20 * 1024;
+const 传输上传队列默认上限 = 8 * 1024 * 1024;
+const 传输上传队列项目上限 = 4096;
+const 传输连接默认竞速数 = 2;
+const 传输回退默认候选数 = 3;
+const 建连默认超时 = 1400;
 const 首字节超时 = 3500;
+const 自适应解析缓存 = new Map();
+const 自适应解析缓存上限 = 256;
+const 自适应解析缓存期限 = 5 * 60 * 1000;
 const 共享解码器 = new TextDecoder();
+
+function 限制整数值(值, 默认值, 最小值, 最大值) {
+  const 数值 = parseInt(String(值 ?? '').trim(), 10);
+  return Number.isFinite(数值) ? Math.max(最小值, Math.min(最大值, 数值)) : 默认值;
+}
+function 获取稳定传输配置() {
+  const 队列MB = 限制整数值(获取配置文本值('uploadQueueMB', 配置默认值.uploadQueueMB), 8, 2, 16);
+  return {
+    adaptiveDial: 获取配置开关值('adaptiveDial', false),
+    dialTimeout: 限制整数值(获取配置文本值('dialTimeout', 配置默认值.dialTimeout), 建连默认超时, 700, 4000),
+    tcpRace: 限制整数值(获取配置文本值('tcpRace', 配置默认值.tcpRace), 传输连接默认竞速数, 1, 3),
+    fallbackCandidates: 限制整数值(获取配置文本值('fallbackRace', 配置默认值.fallbackRace), 传输回退默认候选数, 1, 6),
+    uploadQueueBytes: 队列MB * 1024 * 1024
+  };
+}
 const 唯一标识字节缓存 = new Map();
 function 是否有效格式(字符串) {
   const 用户正则 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -1167,47 +1200,116 @@ async function 检测工作器地区(请求762) {
     return 'SG';
   }
 }
-async function 检查地址可用性(域名760, 端口759 = 443, 超时758 = 2000) {
-  try {
-    const 控制器757 = new AbortController();
-    const 超时标识756 = setTimeout(() => 控制器757.abort(), 超时758);
-    const 响应755 = await fetch(`https://${域名760}`, {
-      method: 'HEAD',
-      signal: 控制器757.signal,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; CF-IP-Checker/1.0)'
-      }
-    });
-    clearTimeout(超时标识756);
-    return 响应755.status < 500;
-  } catch (错误754) {
-    return true;
+const 备用地址健康状态 = new Map();
+const 备用地址健康状态上限 = 128;
+
+function 获取备用地址键(地址, 端口 = 443) {
+  return `${String(地址 || '').toLowerCase()}:${Number(端口) || 443}`;
+}
+function 读取备用地址健康状态(地址, 端口 = 443) {
+  return 备用地址健康状态.get(获取备用地址键(地址, 端口)) || { successCount: 0, failCount: 0, latency: null, cooldownUntil: 0, lastSuccess: 0, lastFailure: 0 };
+}
+function 记录备用地址连接结果(地址, 端口, 成功, 延迟 = null) {
+  if (!地址) return;
+  const 键 = 获取备用地址键(地址, 端口);
+  const 当前 = { ...读取备用地址健康状态(地址, 端口) };
+  const 现在 = Date.now();
+  if (成功) {
+    当前.successCount = Math.min(1000, (当前.successCount || 0) + 1);
+    当前.failCount = 0;
+    当前.lastSuccess = 现在;
+    当前.cooldownUntil = 0;
+    if (Number.isFinite(延迟)) 当前.latency = 当前.latency == null ? 延迟 : Math.round(当前.latency * 0.65 + 延迟 * 0.35);
+  } else {
+    当前.failCount = Math.min(12, (当前.failCount || 0) + 1);
+    当前.lastFailure = 现在;
+    if (当前.failCount >= 2) 当前.cooldownUntil = 现在 + Math.min(15 * 60 * 1000, 60 * 1000 * (2 ** Math.min(4, 当前.failCount - 2)));
+  }
+  备用地址健康状态.set(键, 当前);
+  if (备用地址健康状态.size > 备用地址健康状态上限) {
+    const 最旧键 = [...备用地址健康状态.entries()].sort((甲, 乙) => Math.max(甲[1].lastSuccess || 0, 甲[1].lastFailure || 0) - Math.max(乙[1].lastSuccess || 0, 乙[1].lastFailure || 0))[0]?.[0];
+    if (最旧键) 备用地址健康状态.delete(最旧键);
   }
 }
+function 计算备用地址健康分(项目) {
+  const 状态 = 读取备用地址健康状态(项目.domain || 项目.address, 项目.port);
+  const 现在 = Date.now();
+  let 分数 = (状态.successCount || 0) * 8 - (状态.failCount || 0) * 18;
+  if (状态.latency != null) 分数 += Math.max(-15, 20 - Math.round(状态.latency / 80));
+  if (状态.lastSuccess && 现在 - 状态.lastSuccess < 10 * 60 * 1000) 分数 += 20;
+  if (状态.cooldownUntil > 现在) 分数 -= 10000;
+  return 分数;
+}
+async function 检查地址可用性(域名760, 端口759 = 443, 超时758 = 2000) {
+  const 控制器757 = new AbortController();
+  const 超时标识756 = setTimeout(() => 控制器757.abort(), 超时758);
+  const 开始 = Date.now();
+  try {
+    const 主机 = String(域名760 || '').includes(':') && !String(域名760 || '').startsWith('[') ? `[${域名760}]` : 域名760;
+    const 端口段 = Number(端口759) === 443 ? '' : `:${Number(端口759) || 443}`;
+    const 响应755 = await fetch(`https://${主机}${端口段}/`, {
+      method: 'HEAD',
+      redirect: 'manual',
+      signal: 控制器757.signal,
+      headers: { 'User-Agent': 'CFnew-Health/3.0' }
+    });
+    const 成功 = 响应755.status > 0 && 响应755.status < 500;
+    记录备用地址连接结果(域名760, 端口759, 成功, Date.now() - 开始);
+    return 成功;
+  } catch (错误754) {
+    记录备用地址连接结果(域名760, 端口759, false);
+    return false;
+  } finally {
+    clearTimeout(超时标识756);
+  }
+}
+function 解析回退地址池(输入, 默认端口 = 443) {
+  const 结果 = [];
+  const 已有 = new Set();
+  for (const 项 of String(输入 || '').split(/[\n,;|]+/).map(值 => 值.trim()).filter(Boolean)) {
+    const 解析 = 解析地址值端口(项);
+    const 地址 = String(解析.address || '').trim();
+    const 端口 = 解析.port || 默认端口;
+    if (!地址 || !Number.isFinite(端口) || 端口 < 1 || 端口 > 65535) continue;
+    const 键 = 获取备用地址键(地址, 端口);
+    if (已有.has(键)) continue;
+    已有.add(键);
+    结果.push({ domain: 地址, port: 端口, regionCode: 'CUSTOM', name: '自定义回退' });
+  }
+  return 结果;
+}
+function 获取值备用候选地址(工作器地区753 = '', 值地区匹配752 = 启用地区匹配, 最大数量 = 3) {
+  if (!备用地址列表.length) return [];
+  const 地区顺序 = 值地区匹配752 && 工作器地区753 ? 获取值值值值(工作器地区753) : [];
+  const 地区排名 = new Map(地区顺序.map((值, 索引) => [值, 索引]));
+  const 现在 = Date.now();
+  const 候选 = 备用地址列表.map((地址750, 索引) => {
+    const 状态 = 读取备用地址健康状态(地址750.domain, 地址750.port);
+    return {
+      ...地址750,
+      available: !(状态.cooldownUntil > 现在),
+      __regionRank: 地区排名.has(地址750.regionCode) ? 地区排名.get(地址750.regionCode) : 999,
+      __healthScore: 计算备用地址健康分(地址750),
+      __originalIndex: 索引
+    };
+  }).sort((甲, 乙) => {
+    if (甲.available !== 乙.available) return 甲.available ? -1 : 1;
+    if (甲.__regionRank !== 乙.__regionRank) return 甲.__regionRank - 乙.__regionRank;
+    if (甲.__healthScore !== 乙.__healthScore) return 乙.__healthScore - 甲.__healthScore;
+    return 甲.__originalIndex - 乙.__originalIndex;
+  });
+  return 候选.slice(0, Math.max(1, 最大数量 | 0)).map(({ __regionRank, __healthScore, __originalIndex, ...项目 }) => 项目);
+}
 async function 获取值备用地址(工作器地区753 = '', 值地区匹配752 = 启用地区匹配) {
-  if (备用地址列表.length === 0) {
-    return null;
-  }
-  const 可用地址列表751 = 备用地址列表.map(地址750 => ({
-    ...地址750,
-    available: true
-  }));
-  if (值地区匹配752 && 工作器地区753) {
-    const 值地址列表749 = 获取值地区值(工作器地区753, 可用地址列表751, 值地区匹配752);
-    if (值地址列表749.length > 0) {
-      const 已选地址748 = 值地址列表749[0];
-      return 已选地址748;
-    }
-  }
-  const 已选地址 = 可用地址列表751[0];
-  return 已选地址;
+  return 获取值备用候选地址(工作器地区753, 值地区匹配752, 1)[0] || null;
 }
 function 获取值值(地区747) {
   const 值映射 = {
-    'US': ['SG', 'JP', 'KR'],
-    'SG': ['JP', 'KR', 'US'],
-    'JP': ['SG', 'KR', 'US'],
-    'KR': ['JP', 'SG', 'US'],
+    'US': ['SG', 'JP', 'HK', 'KR'],
+    'SG': ['JP', 'HK', 'KR', 'US'],
+    'JP': ['SG', 'HK', 'KR', 'US'],
+    'HK': ['SG', 'JP', 'KR', 'US'],
+    'KR': ['JP', 'HK', 'SG', 'US'],
     'DE': ['NL', 'GB', 'SE', 'FI'],
     'SE': ['DE', 'NL', 'FI', 'GB'],
     'NL': ['DE', 'GB', 'SE', 'FI'],
@@ -1218,7 +1320,7 @@ function 获取值值(地区747) {
 }
 function 获取值值值值(地区746) {
   const 值值745 = 获取值值(地区746);
-  const 值值744 = ['US', 'SG', 'JP', 'KR', 'DE', 'SE', 'NL', 'FI', 'GB'];
+  const 值值744 = ['US', 'SG', 'JP', 'HK', 'KR', 'DE', 'SE', 'NL', 'FI', 'GB'];
   return [地区746, ...值值745, ...值值744.filter(结果值743 => 结果值743 !== 地区746 && !值值745.includes(结果值743))];
 }
 function 获取值地区值(工作器地区, 可用地址列表, 值地区匹配 = 启用地区匹配) {
@@ -3440,11 +3542,52 @@ async function 获取加密客户端问候配置(域名522) {
     return null;
   }
 }
+function 推断自适应订阅目标(请求) {
+  const 用户代理 = String(请求?.headers?.get?.('user-agent') || '').toLowerCase();
+  if (/clash|mihomo|stash/.test(用户代理)) return 'clash';
+  if (/sing[- ]?box/.test(用户代理)) return 'singbox';
+  if (/surge/.test(用户代理)) return 'surge';
+  if (/quantumult/.test(用户代理)) return 'quanx';
+  if (/loon/.test(用户代理)) return 'loon';
+  return 'v2ray';
+}
+function 识别订阅请求运营商(请求) {
+  const 文本 = `${请求?.cf?.asOrganization || ''} ${请求?.cf?.asn || ''}`.toLowerCase();
+  if (/china mobile|cmcc|移动/.test(文本)) return '移动';
+  if (/china unicom|unicom|联通/.test(文本)) return '联通';
+  if (/china telecom|chinanet|telecom|电信/.test(文本)) return '电信';
+  return '';
+}
+function 稳定散列(文本) {
+  let 值 = 2166136261;
+  for (const 字符 of String(文本 || '')) { 值 ^= 字符.charCodeAt(0); 值 = Math.imul(值, 16777619); }
+  return 值 >>> 0;
+}
+function 稳定洗牌(列表, 种子) {
+  return [...列表].map((项目, 索引) => ({ 项目, 排序: 稳定散列(`${种子}|${索引}|${项目.ip || 项目.domain || ''}|${项目.port || ''}`) }))
+    .sort((甲, 乙) => 甲.排序 - 乙.排序).map(项 => 项.项目);
+}
+function 自适应优选列表(智能结果, 请求, 模式 = 'smart') {
+  if (!智能结果) return 智能结果;
+  if (模式 !== 'random') return 智能结果;
+  const 运营商 = 识别订阅请求运营商(请求);
+  const 种子 = `${请求?.cf?.country || ''}|${请求?.cf?.colo || ''}|${请求?.cf?.asn || ''}|${new Date().toISOString().slice(0, 10)}`;
+  let IP列表 = Array.isArray(智能结果.ipList) ? 智能结果.ipList : [];
+  if (运营商) {
+    const 专用 = IP列表.filter(项 => String(项.isp || '').includes(运营商));
+    const 其它 = IP列表.filter(项 => !String(项.isp || '').includes(运营商));
+    IP列表 = [...稳定洗牌(专用, 种子 + '|carrier'), ...稳定洗牌(其它, 种子 + '|other')];
+  } else IP列表 = 稳定洗牌(IP列表, 种子 + '|ip');
+  return { ...智能结果, ipList: IP列表, domainList: 稳定洗牌(智能结果.domainList || [], 种子 + '|domain') };
+}
+
 async function 处理订阅请求(请求507, 用户506, 网址505 = null, 上下文 = null, 环境值 = {}) {
   if (!网址505) 网址505 = new URL(请求507.url);
   const 最终链接列表 = [];
   const 工作器域名504 = 网址505.hostname;
-  const 目标503 = 网址505.searchParams.get('target') || 'base64';
+  let 目标503 = 网址505.searchParams.get('target') || 'base64';
+  if (String(目标503).toLowerCase() === 'auto') 目标503 = 推断自适应订阅目标(请求507);
+  const 优选订阅模式 = String(网址505.searchParams.get('bestmode') || 'smart').toLowerCase();
   const 别名命名器502 = 创建值节点命名器(false);
 
   // 如果启用了ECH，使用自定义值
@@ -3518,8 +3661,9 @@ async function 处理订阅请求(请求507, 用户506, 网址505 = null, 上下
   } else {
     const 当前启用BestCF智能 = 获取配置开关值('bestcfAuto', true);
     let 智能结果 = null;
-    if (当前启用BestCF智能) {
+    if (当前启用BestCF智能 && 优选订阅模式 !== 'custom') {
       智能结果 = await 获取BestCF智能优选结果(上下文, false, 环境值);
+      智能结果 = 自适应优选列表(智能结果, 请求507, 优选订阅模式);
     }
     if (智能结果) {
       if (启用优选域名 && Array.isArray(智能结果.domainList) && 智能结果.domainList.length > 0) {
@@ -3552,7 +3696,7 @@ async function 处理订阅请求(请求507, 用户506, 网址505 = null, 上下
       }
     }
     // yxURL 是用户显式指定的数据源：保留原功能，并与内置智能源互斥，避免重复和不可预测数量。
-    if (启用仓库优选 && 优选地址源 && (!当前启用BestCF智能 || !智能结果)) {
+    if (启用仓库优选 && 优选地址源 && (优选订阅模式 === 'custom' || !当前启用BestCF智能 || !智能结果)) {
       try {
         const 新地址列表 = await 获取值解析新地址列表();
         if (新地址列表.length > 0) {
@@ -3572,6 +3716,11 @@ async function 处理订阅请求(请求507, 用户506, 网址505 = null, 上下
   let 订阅内容;
   let 内容类型483 = 'text/plain; charset=utf-8';
   switch (目标503.toLowerCase()) {
+    case 'link':
+    case 'node':
+      订阅内容 = 最终链接列表.find(链接 => /^(vless|trojan|ss):\/\//i.test(链接)) || 最终链接列表[0] || '';
+      内容类型483 = 'text/plain; charset=utf-8';
+      break;
     case 'clashdiag':
     case 'mihomodiag':
       订阅内容 = 生成Clash诊断配置(最终链接列表);
@@ -3801,13 +3950,20 @@ async function 生成木马链接列表来源源(列表455, 用户454, 工作器
   return 链接列表447;
 }
 
-// ===== BestCF 智能优选 v3：多源聚合 / 自动评分 / KV缓存 / 后台刷新 =====
-const BESTCF_智能缓存键 = 'bestcf_smart_cache_v3';
-const BESTCF_智能缓存版本 = 3;
+// ===== BestCF 智能优选 v4：质量优先 / 历史稳定度 / 多源聚合 / KV缓存 =====
+const BESTCF_智能缓存键 = 'bestcf_smart_cache_v4';
+const BESTCF_智能缓存版本 = 4;
 const BESTCF_智能数据源 = Object.freeze({
+  // 核心来源：带测速/运营商信息，权重最高。
   uouin: 'https://bestcf.pages.dev/uouin/all.txt',
   wetest: 'https://bestcf.pages.dev/wetest/ipv4.txt',
   vvhan: 'https://bestcf.pages.dev/vvhan/ipv4.txt',
+  // 补充来源取自项目导航站长期维护的 BestCF 数据集；单源权重较低，主要用于交叉验证和扩大网段覆盖。
+  cfyes: 'https://bestcf.pages.dev/cfyes/ipv4.txt',
+  luoli: 'https://bestcf.pages.dev/luoli/all.txt',
+  yutian: 'https://bestcf.pages.dev/yutian/all.txt',
+  tiancheng: 'https://bestcf.pages.dev/tiancheng/mini.txt',
+  // 域名源独立打分，避免和 IP 榜单互相污染。
   domainMini: 'https://bestcf.pages.dev/domain/mini.txt',
   vps789: 'https://bestcf.pages.dev/vps789/top20.txt'
 });
@@ -3823,15 +3979,15 @@ function BestCF限制整数(值, 默认值, 最小值, 最大值) {
 function 获取BestCF智能配置(环境值 = {}) {
   const 有效配置 = 获取有效配置快照(环境值);
   const 刷新分钟 = BestCF限制整数(有效配置.bestcfRefresh, 15, 5, 120);
-  const 目标数量 = BestCF限制整数(有效配置.bestcfTarget, 36, 30, 40);
+  const 目标数量 = BestCF限制整数(有效配置.bestcfTarget, 28, 20, 36);
   // 原生地址默认会同时生成 443(TLS) 与 80(非TLS) 两条；TLS-only/ECH 时只占 1 条。
   // 这里预留原生节点名额，使“精选总节点目标”真正对应最终默认订阅的总节点数。
   const 原生启用 = 是否开启值(有效配置.ena, true);
   const 仅TLS = 是否开启值(有效配置.dkby, false) || 是否开启值(有效配置.ech, false);
   const 原生预留数量 = 原生启用 ? (仅TLS ? 1 : 2) : 0;
-  const 智能名额 = Math.max(20, 目标数量 - 原生预留数量);
-  const 域名数量 = Math.max(6, Math.min(10, Math.round(智能名额 * 0.23)));
-  const IP数量 = Math.max(18, 智能名额 - 域名数量);
+  const 智能名额 = Math.max(14, 目标数量 - 原生预留数量);
+  const 域名数量 = Math.max(4, Math.min(8, Math.round(智能名额 * 0.22)));
+  const IP数量 = Math.max(10, 智能名额 - 域名数量);
   return {
     enabled: 是否开启值(有效配置.bestcfAuto, true),
     refreshMinutes: 刷新分钟,
@@ -3857,7 +4013,7 @@ async function BestCF抓取文本(网址, 超时 = 6000) {
   try {
     const 响应 = await fetch(网址, {
       signal: 控制器.signal,
-      headers: { 'Accept': 'text/plain,*/*;q=0.8', 'User-Agent': 'CFnew-BestCF-Smart/3' }
+      headers: { 'Accept': 'text/plain,*/*;q=0.8', 'User-Agent': 'CFnew-BestCF-Smart/4' }
     });
     if (!响应.ok) throw new Error(`HTTP ${响应.status}`);
     return await 响应.text();
@@ -3920,6 +4076,10 @@ function BestCF计算IP评分(项目) {
   if (来源集合.has('uouin')) 分数 += 42;
   if (来源集合.has('wetest')) 分数 += 30;
   if (来源集合.has('vvhan')) 分数 += 24;
+  if (来源集合.has('cfyes')) 分数 += 20;
+  if (来源集合.has('luoli')) 分数 += 18;
+  if (来源集合.has('yutian')) 分数 += 16;
+  if (来源集合.has('tiancheng')) 分数 += 16;
   分数 += 项目.port === 443 ? 10 : 4;
   if (项目.speed !== null && 项目.speed !== undefined) {
     if (项目.speed >= 20) 分数 += 45;
@@ -3927,14 +4087,14 @@ function BestCF计算IP评分(项目) {
     else if (项目.speed >= 5) 分数 += 28;
     else if (项目.speed >= 2) 分数 += 18;
     else 分数 -= 35;
-  }
+  } else if (来源集合.size === 1) 分数 -= 10;
   if (项目.latency !== null && 项目.latency !== undefined) {
     if (项目.latency <= 80) 分数 += 25;
     else if (项目.latency <= 120) 分数 += 18;
     else if (项目.latency <= 180) 分数 += 10;
     else if (项目.latency <= 250) 分数 += 2;
     else 分数 -= 20;
-  }
+  } else if (来源集合.size === 1) 分数 -= 8;
   if (来源集合.size > 1) 分数 += 15 * (来源集合.size - 1);
   if ((项目.isps || []).some(值 => ['移动', '联通', '电信'].includes(值))) 分数 += 5;
   const 机房集合 = new Set(项目.colos || []);
@@ -3942,17 +4102,20 @@ function BestCF计算IP评分(项目) {
   else if (机房集合.has('SIN')) 分数 += 6;
   else if (机房集合.has('NRT') || 机房集合.has('KIX')) 分数 += 4;
   else if (机房集合.has('SJC') || 机房集合.has('LAX')) 分数 += 2;
+  // 多次刷新仍持续出现的候选通常比“一次性榜单尖峰”更稳定；只给有限加分，避免历史锁死。
+  const 连续出现 = Math.max(0, Number(项目.seenCount || 0));
+  if (连续出现 >= 2) 分数 += Math.min(18, 连续出现 * 3);
   return 分数;
 }
 
-function BestCF合并IP候选(记录列表) {
+function BestCF合并IP候选(记录列表, 历史 = {}) {
   const 映射 = new Map();
   for (const 记录 of 记录列表) {
     if (记录.type !== 'ip' || 记录.host.includes(':')) continue;
     const 键 = `${记录.host}:${记录.port}`;
     let 项目 = 映射.get(键);
     if (!项目) {
-      项目 = { ip: 记录.host, port: 记录.port, isps: [], colos: [], sources: [], latency: null, speed: null, score: 0 };
+      项目 = { ip: 记录.host, port: 记录.port, isps: [], colos: [], sources: [], latency: null, speed: null, score: 0, seenCount: Number(历史[键]?.seenCount || 0) + 1 };
       映射.set(键, 项目);
     }
     if (记录.isp && !项目.isps.includes(记录.isp)) 项目.isps.push(记录.isp);
@@ -3964,10 +4127,26 @@ function BestCF合并IP候选(记录列表) {
   const 列表 = Array.from(映射.values());
   for (const 项目 of 列表) 项目.score = BestCF计算IP评分(项目);
   return 列表.filter(项目 => {
-    if (项目.latency !== null && 项目.latency > 350) return false;
-    if (项目.speed !== null && 项目.speed < 2 && 项目.sources.length === 1 && 项目.sources[0] === 'uouin') return false;
-    return 项目.score >= 35;
+    if (项目.latency !== null && 项目.latency > 320) return false;
+    if (项目.speed !== null && 项目.speed < 2 && 项目.sources.length === 1) return false;
+    if (项目.sources.length === 1 && 项目.speed == null && 项目.latency == null && 项目.seenCount < 2) return false;
+    return 项目.score >= 42;
   }).sort((甲, 乙) => 乙.score - 甲.score || (乙.speed || 0) - (甲.speed || 0) || (甲.latency ?? 9999) - (乙.latency ?? 9999));
+}
+
+function BestCF构建历史(候选列表, 旧历史 = {}) {
+  const 现在 = Date.now();
+  const 新历史 = {};
+  for (const 项目 of 候选列表) {
+    const 键 = `${项目.ip}:${项目.port}`;
+    新历史[键] = { seenCount: Math.min(60, Number(项目.seenCount || 1)), lastSeen: 现在 };
+  }
+  // 保留最近 7 天的历史，最多 512 项，既能识别稳定候选，又避免 KV 无界膨胀。
+  for (const [键, 值] of Object.entries(旧历史 || {})) {
+    if (新历史[键]) continue;
+    if (现在 - Number(值.lastSeen || 0) <= 7 * 24 * 60 * 60 * 1000) 新历史[键] = { seenCount: Math.max(0, Number(值.seenCount || 0) - 1), lastSeen: Number(值.lastSeen || 0) };
+  }
+  return Object.fromEntries(Object.entries(新历史).sort((甲, 乙) => Number(乙[1].lastSeen || 0) - Number(甲[1].lastSeen || 0)).slice(0, 512));
 }
 
 function BestCFIPv4网段键(IP) {
@@ -4017,18 +4196,18 @@ function BestCF选择IP(候选列表, 配置) {
     const 开始数 = 结果.length;
     for (const 项目 of 专线候选) {
       if (结果.length - 开始数 >= 配额) break;
-      尝试加入(项目, 运营商, 2);
+      尝试加入(项目, 运营商, 1);
     }
     if (结果.length - 开始数 < 配额) {
       for (const 项目 of 专线候选) {
         if (结果.length - 开始数 >= 配额) break;
-        尝试加入(项目, 运营商, 4);
+        尝试加入(项目, 运营商, 2);
       }
     }
     if (结果.length - 开始数 < 配额) {
       for (const 项目 of 多线候选) {
         if (结果.length - 开始数 >= 配额) break;
-        尝试加入(项目, '通用', 3);
+        尝试加入(项目, '通用', 2);
       }
     }
   }
@@ -4038,14 +4217,14 @@ function BestCF选择IP(候选列表, 配置) {
     for (const 项目 of 可用全集) {
       if (结果.length >= 目标) break;
       const 标签 = 项目.isps.find(值 => 运营商列表.includes(值)) || '通用';
-      尝试加入(项目, 标签, 3);
+      尝试加入(项目, 标签, 2);
     }
   }
   if (结果.length < 目标) {
     for (const 项目 of 候选列表) {
       if (结果.length >= 目标) break;
       const 标签 = 项目.isps.find(值 => 运营商列表.includes(值)) || '通用';
-      尝试加入(项目, 标签, 6);
+      尝试加入(项目, 标签, 3);
     }
   }
   return 结果.slice(0, 目标);
@@ -4083,7 +4262,7 @@ function BestCF选择域名(记录列表, 数量) {
   for (const 项目 of 候选) {
     if (结果.length >= 数量) break;
     const 族 = BestCF域名族键(项目.domain);
-    if ((族计数.get(族) || 0) >= 2) continue;
+    if ((族计数.get(族) || 0) >= 1) continue;
     族计数.set(族, (族计数.get(族) || 0) + 1);
     结果.push({ domain: 项目.domain, port: 项目.port, name: '域名精选', score: 项目.score, sources: 项目.sources });
   }
@@ -4120,6 +4299,10 @@ async function BestCF执行智能刷新(配置 = 获取BestCF智能配置({})) {
       ['uouin', BESTCF_智能数据源.uouin],
       ['wetest', BESTCF_智能数据源.wetest],
       ['vvhan', BESTCF_智能数据源.vvhan],
+      ['cfyes', BESTCF_智能数据源.cfyes],
+      ['luoli', BESTCF_智能数据源.luoli],
+      ['yutian', BESTCF_智能数据源.yutian],
+      ['tiancheng', BESTCF_智能数据源.tiancheng],
       ['domainMini', BESTCF_智能数据源.domainMini],
       ['vps789', BESTCF_智能数据源.vps789]
     ];
@@ -4138,12 +4321,14 @@ async function BestCF执行智能刷新(配置 = 获取BestCF智能配置({})) {
         状态[名称] = { ok: false, count: 0, error: String(项目.reason?.message || 项目.reason || 'fetch failed').slice(0, 120) };
       }
     });
-    const IP候选 = BestCF合并IP候选(所有记录);
+    const 旧缓存 = await BestCF读取智能缓存();
+    const 旧历史 = 旧缓存?.history || {};
+    const IP候选 = BestCF合并IP候选(所有记录, 旧历史);
     const IP列表 = BestCF选择IP(IP候选, 配置);
     const 域名列表 = BestCF选择域名(所有记录, 配置.domainCount);
-    const 最小IP数量 = Math.min(18, 配置.ipCount);
-    if (IP列表.length < 最小IP数量 || 域名列表.length < 4) {
-      throw new Error(`BestCF候选不足: ip=${IP列表.length}, domain=${域名列表.length}`);
+    const 最小IP数量 = Math.min(10, 配置.ipCount);
+    if (IP列表.length < 最小IP数量 || 域名列表.length < 3) {
+      throw new Error(`BestCF高质量候选不足: ip=${IP列表.length}, domain=${域名列表.length}`);
     }
     const 当前 = Date.now();
     const 数据 = {
@@ -4155,6 +4340,7 @@ async function BestCF执行智能刷新(配置 = 获取BestCF智能配置({})) {
       targetCount: 配置.targetCount,
       ipList: IP列表,
       domainList: 域名列表,
+      history: BestCF构建历史(IP候选, 旧历史),
       sourceStatus: 状态
     };
     await BestCF写入智能缓存(数据);
@@ -4197,7 +4383,7 @@ async function BestCF预热智能缓存(上下文 = null, 环境值 = {}) {
   if (上下文 && typeof 上下文.waitUntil === 'function') 上下文.waitUntil(任务);
   else await 任务;
 }
-// ===== BestCF 智能优选 v3 结束 =====
+// ===== BestCF 智能优选 v4 结束 =====
 
 async function 获取值地址列表() {
   const 值4网址1 = "https://www.wetest.vip/page/cloudflare/address_v4.html";
@@ -4311,7 +4497,12 @@ async function 处理网页套接字请求(请求417) {
   let 远程连接值409 = {
     socket: null,
     writer: null,
-    drainUpload: null
+    drainUpload: null,
+    generation: 0,
+    connectingPromise: null,
+    downlinkDrain: Promise.resolve(),
+    responseHeader: null,
+    activeCandidate: null
   };
   let 协议类型 = null;
   let 域名系统处理器 = null;
@@ -4319,7 +4510,8 @@ async function 处理网页套接字请求(请求417) {
   const 握手缓冲上限 = 16384;
   let 值值408 = false;
   let 传输值 = false;
-  const 值队列 = 创建块队列(传输上传包大小, 传输上传队列上限, 传输上传队列上限 >> 8);
+  const 稳定传输配置 = 获取稳定传输配置();
+  const 值队列 = 创建块队列(传输上传包大小, 稳定传输配置.uploadQueueBytes, 传输上传队列项目上限);
   const 请求值407 = 请求417.fetcher;
   function 处理值远程写入器() {
     try {
@@ -4330,6 +4522,7 @@ async function 处理网页套接字请求(请求417) {
   function 关闭传输() {
     if (传输值) return;
     传输值 = true;
+    远程连接值409.generation++;
     值队列.clear();
     处理值远程写入器();
     try {
@@ -4448,122 +4641,154 @@ async function 处理网页套接字请求(请求417) {
   });
 }
 async function 处理值值384(地址类型383, 主机, 端口数字, 原始数据, 网页套接字382, 值头部381, 远程连接值, 请求回退 = '', 请求地区 = '', 请求值380 = null, 请求代理配置 = null, 请求值379 = null) {
-  // 优先使用客户端path参数，其次回退到全局配置
   const 实际回退 = 请求回退 || 回退地址;
   const 实际地区 = 请求地区 || 当前工作器地区;
   const 实际地区匹配 = 请求值380 !== null ? 请求值380 : 启用地区匹配;
   const 实际代理配置 = 请求代理配置 || 已解析代理5配置;
   const 实际代理已启用 = 请求代理配置 ? true : 是否代理已启用;
-  const 值数据378 = 处理值值8数组(原始数据);
-  async function 连接值发送(地址377, 端口376, 值代理 = false) {
-    // 走代理时首包交给握手函数在释放写入器前发出，避免换写入器导致连接被重置
-    const 远程值375 = 值代理 ? await 处理值代理连接(地址类型383, 地址377, 端口376, 实际代理配置, 请求值379, 值数据378) : await 连接值套接字(地址377, 端口376, 请求值379, 传输连接竞速数);
-    const 写入器374 = 远程值375.writable.getWriter();
-    if (!值代理 && 值数据378.byteLength) await 写入器374.write(值数据378);
-    return {
-      remoteSock: 远程值375,
-      writer: 写入器374
-    };
-  }
-  function 处理值值当前(远程值373, 写入器372) {
-    if (远程连接值.socket !== 远程值373) return;
+  const 稳定配置 = 获取稳定传输配置();
+  const 首包 = 处理值值8数组(原始数据);
+  远程连接值.responseHeader = 值头部381 || null;
+
+  async function 连接并准备(地址, 端口, 走代理 = false) {
+    const 开始 = Date.now();
+    const 套接字 = 走代理
+      ? await 处理值代理连接(地址类型383, 地址, 端口, 实际代理配置, 请求值379, 首包)
+      : await 连接值套接字(地址, 端口, 请求值379, 稳定配置.tcpRace);
+    const 写入器 = 套接字.writable.getWriter();
     try {
-      写入器372?.releaseLock();
-    } catch (忽略值371) {}
+      if (!走代理 && 首包.byteLength) await 写入器.write(首包);
+      return { remoteSock: 套接字, writer: 写入器, dialLatency: Date.now() - 开始 };
+    } catch (错误) {
+      try { 写入器.releaseLock(); } catch (忽略) {}
+      try { 套接字.close?.(); } catch (忽略) {}
+      throw 错误;
+    }
+  }
+
+  function 释放写入器(写入器) {
+    try { 写入器?.releaseLock(); } catch (忽略) {}
+  }
+  function 失效当前连接(套接字, 写入器) {
+    if (远程连接值.socket !== 套接字) return;
+    远程连接值.generation++;
+    释放写入器(写入器);
     远程连接值.socket = null;
     远程连接值.writer = null;
+    远程连接值.activeCandidate = null;
+    try { 套接字?.close?.(); } catch (忽略) {}
   }
-  function 处理值远程(远程值370, 写入器369, 重试值368) {
-    try {
-      if (远程连接值.writer && 远程连接值.writer !== 写入器369) {
-        远程连接值.writer.releaseLock();
+
+  let 重试候选 = null;
+  let 重试索引 = 0;
+  function 获取回退候选() {
+    if (重试候选) return 重试候选;
+    let 地址候选 = 解析回退地址池(实际回退, 端口数字);
+    if (!地址候选.length) 地址候选 = 获取值备用候选地址(实际地区, 实际地区匹配, 稳定配置.fallbackCandidates);
+    const 去重 = new Set();
+    const 结果 = [];
+    const 加入 = (项目) => {
+      if (!项目?.address || !项目.port) return;
+      const 键 = `${项目.useProxy ? 'P' : 'D'}|${获取备用地址键(项目.address, 项目.port)}`;
+      if (去重.has(键)) return;
+      去重.add(键);
+      结果.push(项目);
+    };
+
+    // “优先直连，失败再走代理”：代理原目标是第一条救援链，然后再进入地区回退池。
+    if (启用代理降级 && 实际代理已启用) 加入({ address: 主机, port: 端口数字, useProxy: true, health: false, label: 'upstream-proxy' });
+    if (!(仅走代理 && 实际代理已启用)) {
+      for (const 项目 of 地址候选) {
+        // 默认“优先走代理”保持代理语义，不因重试意外泄露直连出口；无代理/直连优先时走 direct fallback。
+        const 走代理 = 实际代理已启用 && !启用代理降级;
+        加入({ address: 项目.domain, port: 项目.port || 端口数字, useProxy: 走代理, health: true, label: 项目.regionCode || 'fallback' });
       }
-    } catch (忽略值367) {}
-    远程连接值.socket = 远程值370;
-    远程连接值.writer = 写入器369;
+    }
+    重试候选 = 结果;
+    return 结果;
+  }
+
+  function 安装远程连接(连接结果, 候选 = null, 允许继续重试 = false) {
+    const { remoteSock: 套接字, writer: 写入器, dialLatency } = 连接结果;
+    try {
+      if (远程连接值.writer && 远程连接值.writer !== 写入器) 释放写入器(远程连接值.writer);
+      if (远程连接值.socket && 远程连接值.socket !== 套接字) try { 远程连接值.socket.close?.(); } catch (忽略) {}
+    } catch (忽略) {}
+    const 世代 = ++远程连接值.generation;
+    远程连接值.socket = 套接字;
+    远程连接值.writer = 写入器;
+    远程连接值.activeCandidate = 候选;
     远程连接值.drainUpload?.();
-    远程值370.closed.catch(() => {}).finally(() => {
-      if (远程连接值.socket === 远程值370) 关闭套接字值(网页套接字382);
-    });
-    连接值279(远程值370, 网页套接字382, 值头部381, 重试值368).finally(() => {
-      if (远程连接值.socket === 远程值370) {
-        try {
-          写入器369.releaseLock();
-        } catch (忽略值366) {}
+    const 是否当前 = () => 远程连接值.generation === 世代 && 远程连接值.socket === 套接字 && 网页套接字382.readyState === 1;
+    const 取响应头 = () => {
+      if (!是否当前()) return null;
+      const 头 = 远程连接值.responseHeader;
+      远程连接值.responseHeader = null;
+      return 头;
+    };
+    let 已记成功 = false;
+    const 首字节成功 = () => {
+      if (候选?.health && !已记成功) {
+        已记成功 = true;
+        记录备用地址连接结果(候选.address, 候选.port, true, dialLatency);
+      }
+    };
+    const 重试 = 允许继续重试 ? async () => {
+      if (!是否当前()) return;
+      失效当前连接(套接字, 写入器);
+      await 调度重试连接();
+    } : null;
+    const 首字节失败 = () => {
+      if (候选?.health && !已记成功) 记录备用地址连接结果(候选.address, 候选.port, false);
+    };
+    const 下行任务 = 连接值279(套接字, 网页套接字382, 取响应头, 重试, 是否当前, 首字节成功, 首字节失败).finally(() => {
+      if (远程连接值.generation === 世代 && 远程连接值.socket === 套接字) {
+        释放写入器(写入器);
         远程连接值.writer = null;
       }
     });
+    远程连接值.downlinkDrain = 下行任务.catch(() => {});
   }
-  async function 处理重试连接() {
-    // 只走代理：不回落到直连或备用地址，避免出口 IP 泄漏
+
+  async function 执行下一重试() {
+    const 列表 = 获取回退候选();
+    while (重试索引 < 列表.length && 网页套接字382.readyState === 1) {
+      const 候选 = 列表[重试索引++];
+      const 开始 = Date.now();
+      try {
+        const 连接结果 = await 连接并准备(候选.address, 候选.port, 候选.useProxy);
+        if (候选.health) 连接结果.dialLatency = Date.now() - 开始;
+        安装远程连接(连接结果, 候选, 重试索引 < 列表.length);
+        return true;
+      } catch (错误) {
+        if (候选.health) 记录备用地址连接结果(候选.address, 候选.port, false);
+      }
+    }
+    关闭套接字值(网页套接字382);
+    return false;
+  }
+
+  async function 调度重试连接() {
+    if (远程连接值.connectingPromise) return 远程连接值.connectingPromise;
+    const 任务 = 执行下一重试();
+    远程连接值.connectingPromise = 任务;
+    try {
+      return await 任务;
+    } finally {
+      if (远程连接值.connectingPromise === 任务) 远程连接值.connectingPromise = null;
+    }
+  }
+
+  try {
+    const 首跳走代理 = 仅走代理 && 实际代理已启用 ? true : 启用代理降级 ? false : 实际代理已启用;
+    const 初始连接 = await 连接并准备(主机, 端口数字, 首跳走代理);
+    安装远程连接(初始连接, null, !(仅走代理 && 实际代理已启用));
+  } catch (错误) {
     if (仅走代理 && 实际代理已启用) {
       关闭套接字值(网页套接字382);
       return;
     }
-    if (启用代理降级 && 实际代理已启用) {
-      try {
-        const {
-          remoteSock: 代理套接字,
-          writer: 代理写入器
-        } = await 连接值发送(主机, 端口数字, true);
-        处理值远程(代理套接字, 代理写入器, null);
-        return;
-      } catch (代理错误) {
-        let 备用主机365, 备用端口364;
-        if (实际回退 && 实际回退.trim()) {
-          const 已解析363 = 解析地址值端口(实际回退);
-          备用主机365 = 已解析363.address;
-          备用端口364 = 已解析363.port || 端口数字;
-        } else {
-          const 值备用地址362 = await 获取值备用地址(实际地区, 实际地区匹配);
-          备用主机365 = 值备用地址362 ? 值备用地址362.domain : 主机;
-          备用端口364 = 值备用地址362 ? 值备用地址362.port : 端口数字;
-        }
-        try {
-          const {
-            remoteSock: 回退套接字361,
-            writer: 回退写入器360
-          } = await 连接值发送(备用主机365, 备用端口364, false);
-          处理值远程(回退套接字361, 回退写入器360, null);
-        } catch (回退错误359) {
-          关闭套接字值(网页套接字382);
-        }
-      }
-    } else {
-      let 备用主机, 备用端口;
-      if (实际回退 && 实际回退.trim()) {
-        const 已解析 = 解析地址值端口(实际回退);
-        备用主机 = 已解析.address;
-        备用端口 = 已解析.port || 端口数字;
-      } else {
-        const 值备用地址 = await 获取值备用地址(实际地区, 实际地区匹配);
-        备用主机 = 值备用地址 ? 值备用地址.domain : 主机;
-        备用端口 = 值备用地址 ? 值备用地址.port : 端口数字;
-      }
-      try {
-        const {
-          remoteSock: 回退套接字,
-          writer: 回退写入器
-        } = await 连接值发送(备用主机, 备用端口, 实际代理已启用);
-        处理值远程(回退套接字, 回退写入器, null);
-      } catch (回退错误) {
-        关闭套接字值(网页套接字382);
-      }
-    }
-  }
-  try {
-    // 首跳是否走代理：只走代理 → 必走；优先直连 → 不走；其余按代理是否配置
-    const 首跳走代理 = 仅走代理 && 实际代理已启用 ? true : 启用代理降级 ? false : 实际代理已启用;
-    const {
-      remoteSock: 值套接字358,
-      writer: 值写入器
-    } = await 连接值发送(主机, 端口数字, 首跳走代理);
-    处理值远程(值套接字358, 值写入器, () => {
-      处理值值当前(值套接字358, 值写入器);
-      处理重试连接();
-    });
-  } catch (错误357) {
-    await 处理重试连接();
+    await 调度重试连接();
   }
 }
 function 处理值值8数组(块356) {
@@ -4711,45 +4936,101 @@ function 创建值值(网页套接字335) {
   };
 }
 function 处理打开值套接字(地址322, 端口321, 请求值320 = null) {
-  const 目标 = {
-    hostname: 地址322,
-    port: 端口321
-  };
+  const 目标 = { hostname: 地址322, port: 端口321 };
   if (请求值320 && typeof 请求值320.connect === 'function') return 请求值320.connect(目标);
   return 连接(目标);
 }
-async function 处理打开值套接字值(地址319, 端口318, 请求值317 = null) {
+async function 等待套接字打开(套接字, 超时毫秒 = null) {
+  if (!套接字?.opened) return 套接字;
+  const 实际超时 = 超时毫秒 || 获取稳定传输配置().dialTimeout;
+  let 计时器 = null;
   try {
-    const 套接字316 = 处理打开值套接字(地址319, 端口318, 请求值317);
-    if (套接字316?.opened) await 套接字316.opened;
-    return 套接字316;
-  } catch (错误315) {
-    if (!请求值317) throw 错误315;
-    const 套接字314 = 连接({
-      hostname: 地址319,
-      port: 端口318
-    });
-    if (套接字314?.opened) await 套接字314.opened;
-    return 套接字314;
+    await Promise.race([
+      套接字.opened,
+      new Promise((_, 拒绝) => { 计时器 = setTimeout(() => 拒绝(new Error(`TCP dial timeout (${实际超时}ms)`)), 实际超时); })
+    ]);
+    return 套接字;
+  } catch (错误) {
+    try { 套接字.close?.(); } catch (忽略) {}
+    throw 错误;
+  } finally {
+    if (计时器) clearTimeout(计时器);
   }
 }
+async function 处理打开值套接字值(地址319, 端口318, 请求值317 = null) {
+  try {
+    return await 等待套接字打开(处理打开值套接字(地址319, 端口318, 请求值317));
+  } catch (错误315) {
+    if (!请求值317) throw 错误315;
+    return await 等待套接字打开(连接({ hostname: 地址319, port: 端口318 }));
+  }
+}
+function 自适应DNS缓存写入(键, 值, 期限 = 自适应解析缓存期限) {
+  自适应解析缓存.set(键, { value: 值, expiresAt: Date.now() + 期限 });
+  if (自适应解析缓存.size > 自适应解析缓存上限) 自适应解析缓存.delete(自适应解析缓存.keys().next().value);
+}
+async function 查询自适应DNS记录(域名, 类型) {
+  const 键 = `${String(域名).toLowerCase()}|${类型}`;
+  const 缓存 = 自适应解析缓存.get(键);
+  if (缓存 && 缓存.expiresAt > Date.now()) return 缓存.value;
+  if (缓存) 自适应解析缓存.delete(键);
+  const 端点 = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/resolve'];
+  let 最后错误 = null;
+  for (const 基础 of 端点) {
+    const 控制器 = new AbortController();
+    const 计时器 = setTimeout(() => 控制器.abort(), 900);
+    try {
+      const 网址 = `${基础}?name=${encodeURIComponent(域名)}&type=${encodeURIComponent(类型)}`;
+      const 响应 = await fetch(网址, { signal: 控制器.signal, headers: { Accept: 'application/dns-json' } });
+      if (!响应.ok) throw new Error(`DoH ${响应.status}`);
+      const 数据 = await 响应.json();
+      const 结果 = Array.isArray(数据.Answer) ? 数据.Answer.map(项 => String(项.data || '').replace(/\.$/, '')).filter(项 => 类型 === 'A' ? /^(?:\d{1,3}\.){3}\d{1,3}$/.test(项) : 项.includes(':')) : [];
+      自适应DNS缓存写入(键, [...new Set(结果)], 结果.length ? 自适应解析缓存期限 : 60 * 1000);
+      return [...new Set(结果)];
+    } catch (错误) {
+      最后错误 = 错误;
+    } finally {
+      clearTimeout(计时器);
+    }
+  }
+  自适应DNS缓存写入(键, [], 60 * 1000);
+  if (最后错误) throw 最后错误;
+  return [];
+}
+async function 获取自适应拨号候选(域名, 最大数量 = 2) {
+  if (!域名 || 是否有效地址(规范化节点主机(域名))) return [];
+  const [甲, 乙] = await Promise.allSettled([查询自适应DNS记录(域名, 'A'), 查询自适应DNS记录(域名, 'AAAA')]);
+  const 四版 = 甲.status === 'fulfilled' ? 甲.value : [];
+  const 六版 = 乙.status === 'fulfilled' ? 乙.value : [];
+  return [...new Set([...四版, ...六版])].slice(0, Math.max(1, 最大数量 | 0));
+}
 async function 连接值套接字(地址313, 端口312, 请求值311 = null, 竞速数量 = 1) {
-  const 数量 = Math.max(1, 竞速数量 | 0);
-  if (数量 <= 1) return 处理打开值套接字值(地址313, 端口312, 请求值311);
-  const 本地值310 = Array.from({
-    length: 数量
-  }, () => 处理打开值套接字值(地址313, 端口312, 请求值311));
-  const 本地值309 = await Promise.any(本地值310);
-  本地值310.forEach(本地值308 => {
-    本地值308.then(套接字307 => {
-      if (套接字307 !== 本地值309) {
-        try {
-          套接字307.close();
-        } catch (忽略值306) {}
-      }
-    }, () => {});
-  });
-  return 本地值309;
+  const 配置 = 获取稳定传输配置();
+  const 数量 = Math.max(1, Math.min(3, 竞速数量 | 0));
+  const 主任务 = 处理打开值套接字值(地址313, 端口312, 请求值311);
+  if (数量 <= 1 || !配置.adaptiveDial || 是否有效地址(规范化节点主机(地址313))) return 主任务;
+
+  // 不再对同一个 hostname 盲目双拨：主拨立即开始，第二路使用 DoH 得到的不同 IP 做 hedge。
+  // 若主拨已先成功，DoH 任务即使稍后返回也不会再创建多余 socket。
+  let 已决出主连接 = false;
+  const 辅助任务 = (async () => {
+    const 候选 = await 获取自适应拨号候选(地址313, 数量 - 1);
+    if (已决出主连接) throw new Error('Primary dial already won');
+    if (!候选.length) throw new Error('No adaptive DNS candidate');
+    const 任务 = 候选.map(候选地址 => 处理打开值套接字值(候选地址, 端口312, 请求值311));
+    const 获胜 = await Promise.any(任务);
+    任务.forEach(任务项 => 任务项.then(套接字 => {
+      if (套接字 !== 获胜) try { 套接字.close?.(); } catch (忽略) {}
+    }, () => {}));
+    return 获胜;
+  })();
+  const 全部任务 = [主任务, 辅助任务];
+  const 获胜 = await Promise.any(全部任务);
+  已决出主连接 = true;
+  全部任务.forEach(任务项 => 任务项.then(套接字 => {
+    if (套接字 !== 获胜) try { 套接字.close?.(); } catch (忽略) {}
+  }, () => {}));
+  return 获胜;
 }
 function 获取唯一标识字节(令牌305) {
   if (唯一标识字节缓存.has(令牌305)) return 唯一标识字节缓存.get(令牌305);
@@ -4887,82 +5168,86 @@ function 制作值流(套接字284, 值数据头部) {
     }
   });
 }
-async function 连接值279(远程套接字, 网页套接字278, 头部数据, 重试值) {
-  let 头部277 = 头部数据,
-    是否有数据 = false,
-    本地值276 = false;
-
-  // 关键：直连有时握手成功但远端长时间无数据，需要超时触发降级
+async function 连接值279(远程套接字, 网页套接字278, 获取头部数据, 重试值, 是否当前值 = () => true, 首字节回调 = null, 首字节失败回调 = null) {
+  let 是否有数据 = false;
+  let 已触发重试 = false;
+  let 已通知首字节失败 = false;
   let 首次字节计时器 = null;
-  if (重试值) {
-    首次字节计时器 = setTimeout(() => {
-      if (!是否有数据 && !本地值276) {
-        本地值276 = true;
-        try {
-          远程套接字.close && 远程套接字.close();
-        } catch (忽略值275) {}
-        重试值();
-      }
-    }, 首字节超时);
-  }
-  const 本地值274 = 创建值值(网页套接字278);
   let 读取器273 = null;
-  let 本地值272 = true;
+  let 使用BYOB = true;
   let 缓冲271 = new ArrayBuffer(传输块大小);
-  try {
-    try {
-      读取器273 = 远程套接字.readable.getReader({
-        mode: 'byob'
-      });
-    } catch (忽略值270) {
-      本地值272 = false;
-      读取器273 = 远程套接字.readable.getReader();
+  const 下行聚合器 = 创建值值(网页套接字278);
+
+  function 通知首字节失败() {
+    if (已通知首字节失败 || 是否有数据) return;
+    已通知首字节失败 = true;
+    try { 首字节失败回调?.(); } catch (忽略) {}
+  }
+  async function 触发重试() {
+    if (已触发重试 || !重试值 || !是否当前值()) return false;
+    已触发重试 = true;
+    通知首字节失败();
+    try { 远程套接字.close?.(); } catch (忽略) {}
+    try { await 重试值(); } catch (忽略) { if (网页套接字278.readyState === 1) 关闭套接字值(网页套接字278); }
+    return true;
+  }
+
+  首次字节计时器 = setTimeout(() => {
+    if (是否有数据 || !是否当前值()) return;
+    if (重试值) {
+      void 触发重试();
+    } else {
+      通知首字节失败();
+      try { 远程套接字.close?.(); } catch (忽略) {}
+      if (网页套接字278.readyState === 1) 关闭套接字值(网页套接字278);
     }
+  }, 首字节超时);
+  try {
+    try { 读取器273 = 远程套接字.readable.getReader({ mode: 'byob' }); }
+    catch (忽略) { 使用BYOB = false; 读取器273 = 远程套接字.readable.getReader(); }
     for (;;) {
-      const 结果269 = 本地值272 ? await 读取器273.read(new Uint8Array(缓冲271, 0, 传输块大小)) : await 读取器273.read();
-      if (结果269.done) break;
-      const 读取值 = 结果269.value;
-      let 块268 = 处理值值8数组(读取值);
-      const 值缓冲 = 本地值272 && 读取值?.buffer instanceof ArrayBuffer && 读取值.buffer.byteLength >= 传输块大小 ? 读取值.buffer : new ArrayBuffer(传输块大小);
-      if (!块268.byteLength) continue;
+      const 结果 = 使用BYOB ? await 读取器273.read(new Uint8Array(缓冲271, 0, 传输块大小)) : await 读取器273.read();
+      if (结果.done) break;
+      if (!是否当前值()) break;
+      const 读取值 = 结果.value;
+      let 块 = 处理值值8数组(读取值);
+      const 值缓冲 = 使用BYOB && 读取值?.buffer instanceof ArrayBuffer && 读取值.buffer.byteLength >= 传输块大小 ? 读取值.buffer : new ArrayBuffer(传输块大小);
+      if (!块.byteLength) continue;
       if (!是否有数据) {
         是否有数据 = true;
-        if (首次字节计时器) {
-          clearTimeout(首次字节计时器);
-          首次字节计时器 = null;
-        }
+        if (首次字节计时器) { clearTimeout(首次字节计时器); 首次字节计时器 = null; }
+        try { 首字节回调?.(); } catch (忽略) {}
+        const 头 = typeof 获取头部数据 === 'function' ? 获取头部数据() : 获取头部数据;
+        if (头) 块 = 拼接值8数组(头, 块);
       }
       if (网页套接字278.readyState !== 1) throw new Error(错误_网页套接字未打开);
-      if (头部277) {
-        块268 = 拼接值8数组(头部277, 块268);
-        头部277 = null;
-      }
-      if (块268.byteLength >= 传输块大小 >> 1) {
-        本地值274.flush();
-        网页套接字278.send(块268);
-        if (本地值272) 缓冲271 = new ArrayBuffer(传输块大小);
+      if (块.byteLength >= (传输块大小 >> 1)) {
+        下行聚合器.flush();
+        网页套接字278.send(块);
+        if (使用BYOB) 缓冲271 = new ArrayBuffer(传输块大小);
       } else {
-        本地值274.send(块268.slice());
-        if (本地值272) 缓冲271 = 值缓冲;
+        下行聚合器.send(块.slice());
+        if (使用BYOB) 缓冲271 = 值缓冲;
       }
     }
-    本地值274.flush();
-  } catch (错误267) {
-    // 已经触发 retry 时不要关闭 WS（retry 会重新挂载新 socket）
-    if (!本地值276) 关闭套接字值(网页套接字278);
+    下行聚合器.flush();
+  } catch (错误) {
+    if (是否当前值()) {
+      if (!是否有数据 && 重试值) await 触发重试();
+      else if (!是否有数据) { 通知首字节失败(); if (!已触发重试) 关闭套接字值(网页套接字278); }
+      else if (!已触发重试) 关闭套接字值(网页套接字278);
+    }
   } finally {
-    try {
-      本地值274.flush();
-    } catch (忽略值266) {}
-    try {
-      读取器273?.releaseLock();
-    } catch (忽略值265) {}
+    if (首次字节计时器) clearTimeout(首次字节计时器);
+    try { 下行聚合器.flush(); } catch (忽略) {}
+    try { 读取器273?.releaseLock(); } catch (忽略) {}
   }
-  if (首次字节计时器) {
-    clearTimeout(首次字节计时器);
-    首次字节计时器 = null;
+  if (!是否当前值()) return;
+  if (!是否有数据 && 重试值) {
+    if (await 触发重试()) return;
   }
-  if (!是否有数据 && !本地值276 && 重试值) 重试值();
+  if (!是否有数据) 通知首字节失败();
+  if (!已触发重试 && 网页套接字278.readyState === 1) 关闭套接字值(网页套接字278);
 }
 function 提取值用户数据报帧(状态, 块) {
   const 新数据 = 处理值值8数组(块);
@@ -5058,7 +5343,7 @@ async function 处理值代理连接(地址类型, 地址262, 端口261, 代理�
     socksPort: 代理端口257
   } = 代理配置;
   // 优先用请求自带的 fetcher 建连，回退到全局连接
-  const 套接字256 = 处理打开值套接字(主机名258, 代理端口257, 请求值258);
+  const 套接字256 = await 处理打开值套接字值(主机名258, 代理端口257, 请求值258);
   const 写入器255 = 套接字256.writable.getWriter();
   await 写入器255.write(new Uint8Array(本地值260 ? [5, 2, 0, 2] : [5, 1, 0]));
   const 读取器254 = 套接字256.readable.getReader();
@@ -5143,7 +5428,7 @@ async function 处理值隧道连接(地址238值, 端口237值, 代理配置, �
   };
   // 优先用请求自带的 fetcher 建连，回退到全局连接
   const 套接字 = 请求值236值 && typeof 请求值236值.connect === 'function' ? (连接选项 === undefined ? 请求值236值.connect(目标参数) : 请求值236值.connect(目标参数, 连接选项)) : 连接(目标参数, 连接选项);
-  if (套接字?.opened) await 套接字.opened;
+  await 等待套接字打开(套接字);
   // IPv6 目标在请求行里要带方括号
   const 目标主机 = 地址238值.includes(':') && !/^\[.*\]$/.test(地址238值) ? `[${地址238值}]` : 地址238值;
   const 目标地址 = `${目标主机}:${端口237值}`;
@@ -6576,6 +6861,42 @@ async function 处理订阅值(请求241, 用户240 = null) {
                 </div>
                 <div class="subscription-url" id="clientSubscriptionUrl"></div>
             </div>
+            <div class="card" id="adaptiveLinksCard">
+                <h2 class="card-title">📋 获取节点链接</h2>
+                <div style="display:grid;gap:12px;">
+                    <div style="display:grid;grid-template-columns:minmax(110px,150px) 1fr auto;gap:10px;align-items:center;">
+                        <strong style="color:var(--ui-text);">节点链接格式</strong>
+                        <input id="adaptiveNodeLink" readonly style="min-width:0;width:100%;padding:11px 12px;border:1px solid var(--ui-border);border-radius:10px;background:var(--ui-control);color:var(--ui-text);" value="正在生成…">
+                        <div style="display:flex;gap:8px;"><button type="button" class="client-btn" style="min-width:auto;padding:10px 13px;" onclick="打开自适应二维码('adaptiveNodeLink')">二维码</button><button type="button" class="client-btn" style="min-width:auto;padding:10px 13px;" onclick="复制自适应字段('adaptiveNodeLink')">复制节点</button></div>
+                    </div>
+                    <div style="display:grid;grid-template-columns:minmax(110px,150px) 1fr auto;gap:10px;align-items:center;">
+                        <strong style="color:var(--ui-text);">自适应订阅 <span title="根据客户端 User-Agent 自动返回 Clash / sing-box / Surge / QuanX / Loon / v2ray 格式；未识别时返回通用 Base64。">ⓘ</span></strong>
+                        <input id="adaptiveSubscriptionLink" readonly style="min-width:0;width:100%;padding:11px 12px;border:1px solid var(--ui-border);border-radius:10px;background:var(--ui-control);color:var(--ui-text);" value="">
+                        <div style="display:flex;gap:8px;"><button type="button" class="client-btn" style="min-width:auto;padding:10px 13px;" onclick="打开自适应二维码('adaptiveSubscriptionLink')">二维码</button><button type="button" class="client-btn" style="min-width:auto;padding:10px 13px;" onclick="复制自适应字段('adaptiveSubscriptionLink')">复制订阅</button></div>
+                    </div>
+                </div>
+            </div>
+            <div class="card" id="preferredSubscriptionCard">
+                <h2 class="card-title">⚡ 优选订阅生成</h2>
+                <div style="display:grid;grid-template-columns:minmax(120px,160px) 1fr;gap:12px;align-items:start;">
+                    <strong style="padding-top:10px;color:var(--ui-text);">优选订阅模式</strong>
+                    <select id="preferredSubscriptionMode" onchange="更新优选订阅模块()" style="width:100%;padding:11px 12px;border:1px solid var(--ui-border);border-radius:10px;background:var(--ui-control);color:var(--ui-text);">
+                        <option value="smart">优选订阅生成器（多源质量精选，稳定优先）</option>
+                        <option value="random">自适应优选（按订阅网络运营商 + 每日稳定洗牌）</option>
+                        <option value="custom">自定义订阅（支持多接口汇聚）</option>
+                    </select>
+                    <strong style="padding-top:10px;color:var(--ui-text);">自定义优选 <span title="每行或逗号分隔多个订阅/优选接口；保存后写入现有 yxURL 配置。">ⓘ</span></strong>
+                    <textarea id="preferredAggregateSources" rows="6" placeholder="https://example.com/list1.txt&#10;https://example.com/list2.txt" style="width:100%;padding:11px 12px;border:1px solid var(--ui-border);border-radius:10px;background:var(--ui-control);color:var(--ui-text);resize:vertical;"></textarea>
+                    <strong style="padding-top:10px;color:var(--ui-text);">订阅接口</strong>
+                    <input id="preferredSubscriptionLink" readonly style="width:100%;padding:11px 12px;border:1px solid var(--ui-border);border-radius:10px;background:var(--ui-control);color:var(--ui-text);">
+                </div>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;">
+                    <button type="button" class="client-btn" style="min-width:auto;" onclick="在线检查优选()">在线优选</button>
+                    <button type="button" class="client-btn" style="min-width:auto;" onclick="复制自适应字段('preferredSubscriptionLink')">复制订阅接口</button>
+                    <button type="button" class="client-btn" style="min-width:auto;" onclick="保存优选汇聚来源()">保存自定义来源</button>
+                    <span id="preferredSubscriptionStatus" style="align-self:center;color:var(--ui-muted);font-size:.86rem;"></span>
+                </div>
+            </div>
             <div class="card">
                     <h2 class="card-title">${翻译值.systemStatus}</h2>
                 <div id="systemStatus" style="margin: 20px 0; padding: 15px; background: rgba(8, 4, 28, 0.8); border: 2px solid #00f0ff; box-shadow: 0 0 20px rgba(0, 240, 255, 0.3), inset 0 0 15px rgba(0, 240, 255, 0.1); position: relative; overflow: hidden;">
@@ -6830,11 +7151,21 @@ async function 处理订阅值(请求241, 用户240 = null) {
                                         <label style="color: #7aa9c4; font-size: 0.9rem;">自动刷新间隔（分钟）
                                             <input type="number" id="bestcfRefresh" min="5" max="120" step="5" value="15" style="margin-top: 6px; width: 100%; padding: 9px; background: rgba(0,0,0,.75); border: 1px solid #00f0ff; color: #00f0ff; border-radius: 4px;">
                                         </label>
-                                        <label style="color: #7aa9c4; font-size: 0.9rem;">精选总节点目标（30-40）
-                                            <input type="number" id="bestcfTarget" min="30" max="40" step="1" value="36" style="margin-top: 6px; width: 100%; padding: 9px; background: rgba(0,0,0,.75); border: 1px solid #00f0ff; color: #00f0ff; border-radius: 4px;">
+                                        <label style="color: #7aa9c4; font-size: 0.9rem;">精选总节点目标（20-36）
+                                            <input type="number" id="bestcfTarget" min="20" max="36" step="1" value="28" style="margin-top: 6px; width: 100%; padding: 9px; background: rgba(0,0,0,.75); border: 1px solid #00f0ff; color: #00f0ff; border-radius: 4px;">
                                         </label>
                                     </div>
-                                    <small style="color: #7aa9c4; font-size: 0.82rem; display: block; margin-top: 10px; line-height: 1.5;">自动聚合 UOUIN / WeTest / vvHan / VPS789 / Domain Mini，按带宽、延迟、多源认可、运营商和网段多样性评分；结果写入KV缓存。默认约36个（含原生节点），质量不足时不强行塞入明显低速节点。</small>
+                                    <small style="color: #7aa9c4; font-size: 0.82rem; display: block; margin-top: 10px; line-height: 1.5;">自动聚合 UOUIN / WeTest / vvHan / VPS789 / Domain Mini，按带宽、延迟、多源认可、历史稳定度和网段多样性评分；结果写入KV缓存。默认约28个（含原生节点），质量不足时不强行凑数。</small>
+                                </div>
+                                <div style="margin-bottom: 15px; padding: 12px; border: 1px dashed rgba(0,240,255,0.35); border-radius: 6px;">
+                                    <label style="display:inline-flex;align-items:center;color:#00f0ff;cursor:pointer;"><input type="checkbox" id="adaptiveDial" style="margin-right:8px;width:18px;height:18px;"><span>自适应 TCP 竞速</span></label>
+                                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-top:10px;">
+                                        <label style="color:#7aa9c4;font-size:.86rem;">建连超时(ms)<input type="number" id="dialTimeout" min="700" max="4000" step="100" value="1400" style="margin-top:5px;width:100%;padding:8px;"></label>
+                                        <label style="color:#7aa9c4;font-size:.86rem;">TCP竞速路数<input type="number" id="tcpRace" min="1" max="3" step="1" value="2" style="margin-top:5px;width:100%;padding:8px;"></label>
+                                        <label style="color:#7aa9c4;font-size:.86rem;">回退候选数<input type="number" id="fallbackRace" min="1" max="6" step="1" value="3" style="margin-top:5px;width:100%;padding:8px;"></label>
+                                        <label style="color:#7aa9c4;font-size:.86rem;">上传队列(MiB)<input type="number" id="uploadQueueMB" min="2" max="16" step="1" value="8" style="margin-top:5px;width:100%;padding:8px;"></label>
+                                    </div>
+                                    <small style="color:#7aa9c4;font-size:.8rem;display:block;margin-top:8px;">域名主拨立即开始，第二路仅在需要时使用 DoH 解析出的不同 IP；失败候选进入短时冷却，避免反复撞同一个坏回退。</small>
                                 </div>
                                 <div style="margin-bottom: 15px;">
                                     <label style="display: block; margin-bottom: 8px; color: #00f0ff; font-weight: bold; text-shadow: 0 0 3px #00f0ff;">IP版本选择</label>
@@ -7537,6 +7868,88 @@ async function 测试接口() {
   }
 }
 
+function 获取订阅基础路径() {
+  return window.location.pathname.replace(/\/$/, '') + '/sub';
+}
+function 更新优选订阅模块() {
+  const 模式元素 = document.getElementById('preferredSubscriptionMode');
+  const 来源元素 = document.getElementById('preferredAggregateSources');
+  const 输出元素 = document.getElementById('preferredSubscriptionLink');
+  if (!模式元素 || !输出元素) return;
+  const 模式 = 模式元素.value || 'smart';
+  const 基础 = new URL(获取订阅基础路径(), window.location.origin);
+  基础.searchParams.set('target', 'auto');
+  基础.searchParams.set('bestmode', 模式);
+  输出元素.value = 基础.toString();
+  if (来源元素) 来源元素.disabled = 模式 !== 'custom';
+}
+async function 初始化自适应链接模块() {
+  const 自适应 = document.getElementById('adaptiveSubscriptionLink');
+  const 节点 = document.getElementById('adaptiveNodeLink');
+  const 来源 = document.getElementById('preferredAggregateSources');
+  if (自适应) {
+    const 网址 = new URL(获取订阅基础路径(), window.location.origin);
+    网址.searchParams.set('target', 'auto');
+    网址.searchParams.set('bestmode', 'smart');
+    自适应.value = 网址.toString();
+  }
+  更新优选订阅模块();
+  try {
+    const 响应 = await fetch(获取订阅基础路径() + '?target=link&bestmode=smart', { cache: 'no-store' });
+    if (节点) 节点.value = 响应.ok ? (await 响应.text()).trim() : '节点生成失败';
+  } catch (错误) { if (节点) 节点.value = '节点生成失败'; }
+  try {
+    const 响应 = await fetch(window.location.pathname + '/api/config', { cache: 'no-store' });
+    if (响应.ok) {
+      const 配置 = await 响应.json();
+      if (来源 && 配置.yxURL) 来源.value = String(配置.yxURL).split(/[,;]+/).map(值 => 值.trim()).filter(Boolean).join('\n');
+    }
+  } catch (忽略) {}
+}
+async function 复制自适应字段(标识) {
+  const 元素 = document.getElementById(标识);
+  if (!元素?.value) return;
+  try { await navigator.clipboard.writeText(元素.value); 显示提示('已复制', 'success', { duration: 1800 }); }
+  catch (错误) { 元素.select?.(); document.execCommand?.('copy'); 显示提示('已复制', 'success', { duration: 1800 }); }
+}
+function 打开自适应二维码(标识) {
+  const 值 = document.getElementById(标识)?.value || '';
+  if (!值) return;
+  // QR 是纯前端可选能力，失败不会影响节点/订阅本身。
+  window.open('https://quickchart.io/qr?size=320&text=' + encodeURIComponent(值), '_blank', 'noopener,noreferrer');
+}
+async function 在线检查优选() {
+  const 状态 = document.getElementById('preferredSubscriptionStatus');
+  const 链接 = document.getElementById('preferredSubscriptionLink')?.value;
+  if (!链接) return;
+  if (状态) 状态.textContent = '正在检查订阅生成…';
+  try {
+    const 网址 = new URL(链接);
+    网址.searchParams.set('target', 'link');
+    const 响应 = await fetch(网址.toString(), { cache: 'no-store' });
+    const 文本 = (await 响应.text()).trim();
+    if (!响应.ok || !/^(vless|trojan|ss):\/\//i.test(文本)) throw new Error('未生成有效节点');
+    if (状态) 状态.textContent = '✓ 优选订阅可正常生成';
+  } catch (错误) { if (状态) 状态.textContent = '✗ 检查失败：' + 错误.message; }
+}
+async function 保存优选汇聚来源() {
+  const 来源元素 = document.getElementById('preferredAggregateSources');
+  const 状态 = document.getElementById('preferredSubscriptionStatus');
+  if (!来源元素) return;
+  const yxURL = 来源元素.value.split(/[\n,;]+/).map(值 => 值.trim()).filter(Boolean).join(',');
+  try {
+    const 响应 = await fetch(window.location.pathname + '/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ yxURL }) });
+    const 数据 = await 响应.json().catch(() => ({}));
+    if (!响应.ok || 数据.success === false) throw new Error(数据.message || '保存失败');
+    const 原字段 = document.getElementById('yxURL'); if (原字段) 原字段.value = yxURL;
+    if (状态) 状态.textContent = '✓ 自定义汇聚来源已保存';
+    const 模式 = document.getElementById('preferredSubscriptionMode'); if (模式) 模式.value = 'custom';
+    更新优选订阅模块();
+  } catch (错误) { if (状态) 状态.textContent = '✗ ' + 错误.message; }
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', 初始化自适应链接模块, { once: true });
+else 初始化自适应链接模块();
+
 // 配置管理相关函数
 async function 检查键值状态() {
   const 接口网址20134 = window.location.pathname + '/api/config';
@@ -7712,7 +8125,12 @@ function 应用配置到界面(配置) {
   写入开关值('ispTelecom', 配置.ispTelecom, true);
   写入开关值('bestcfAuto', 配置.bestcfAuto, true);
   写入字段值('bestcfRefresh', 配置.bestcfRefresh || '15');
-  写入字段值('bestcfTarget', 配置.bestcfTarget || '36');
+  写入字段值('bestcfTarget', 配置.bestcfTarget || '28');
+  写入开关值('adaptiveDial', 配置.adaptiveDial, false);
+  写入字段值('dialTimeout', 配置.dialTimeout || '1400');
+  写入字段值('tcpRace', 配置.tcpRace || '2');
+  写入字段值('fallbackRace', 配置.fallbackRace || '3');
+  写入字段值('uploadQueueMB', 配置.uploadQueueMB || '8');
   写入字段值('customPath', 配置.d);
   写入字段值('customIP', 配置.p);
   写入字段值('yx', 配置.yx);
@@ -7761,7 +8179,12 @@ function 收集界面配置() {
     ispTelecom: 读取开关值('ispTelecom', true),
     bestcfAuto: 读取开关值('bestcfAuto', true),
     bestcfRefresh: 读取字段值('bestcfRefresh') || '15',
-    bestcfTarget: 读取字段值('bestcfTarget') || '36'
+    bestcfTarget: 读取字段值('bestcfTarget') || '28',
+    adaptiveDial: 读取开关值('adaptiveDial', false),
+    dialTimeout: 读取字段值('dialTimeout') || '1400',
+    tcpRace: 读取字段值('tcpRace') || '2',
+    fallbackRace: 读取字段值('fallbackRace') || '3',
+    uploadQueueMB: 读取字段值('uploadQueueMB') || '8'
   };
   if (配置.ev === 'no' && 配置.et === 'no' && 配置.ex === 'no') {
     配置.ev = 'yes';
@@ -7951,6 +8374,11 @@ async function 重置全部配置() {
           bestcfAuto: '',
           bestcfRefresh: '',
           bestcfTarget: '',
+          adaptiveDial: '',
+          dialTimeout: '',
+          tcpRace: '',
+          fallbackRace: '',
+          uploadQueueMB: '',
           ispMobile: '',
           ispUnicom: '',
           ispTelecom: '',

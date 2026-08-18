@@ -1,5 +1,7 @@
 import { connect } from 'cloudflare:sockets';
 
+// CFnew Compact Stable v3.0.0 - AdaptiveLink + StableTransport
+
 // CFnew calm glass UI + mobile transport compatibility repair. UI/API behavior is preserved; WebSocket handshake and DNS transport are hardened.
 const __CFNativeResponse = globalThis.Response;
 const __CF_UI_MARKER = 'data-cfnew-ui="calm-glass-v2"';
@@ -673,6 +675,12 @@ const 是否代理已启用 = false;
 let 启用地区匹配 = true;
 let 当前工作器地区 = '';
 
+// 稳定传输默认值：紧凑版保持保守并发，优先降低卡死、秒断和重拨竞态。
+const 稳定拨号超时 = 1400;
+const 稳定首字节超时 = 3500;
+const 稳定回退候选数 = 3;
+const 备用地址健康状态 = new Map();
+
 const 备用地址列表 = [
   { domain: 解码64('UHJveHlJUC5VUy5DTUxpdXNzc3MubmV0'), region: 'US', regionCode: 'US', 端口: 443 },
   { domain: 解码64('UHJveHlJUC5TRy5DTUxpdXNzc3MubmV0'), region: 'SG', regionCode: 'SG', 端口: 443 },
@@ -756,14 +764,72 @@ function 获取智能地区选择(工作器地区, 可用地址列表) {
   return 排序地址列表;
 }
 
-async function 获取最佳备用地址(工作器地区 = '') {
-  if (备用地址列表.length === 0) return null;
-  const 可用地址列表 = 备用地址列表.map(地址项 => ({ ...地址项, available: true }));
-  if (启用地区匹配 && 工作器地区) {
-    const 排序地址列表 = 获取智能地区选择(工作器地区, 可用地址列表);
-    if (排序地址列表.length > 0) return 排序地址列表[0];
+function 获取备用健康键(地址项) {
+  return `${String(地址项?.domain || '').toLowerCase()}:${Number(地址项?.端口 || 443)}`;
+}
+
+function 获取备用健康项(地址项) {
+  const 键 = 获取备用健康键(地址项);
+  if (!备用地址健康状态.has(键)) 备用地址健康状态.set(键, { success: 0, fail: 0, latency: null, cooldownUntil: 0, lastSuccess: 0, lastFailure: 0 });
+  return 备用地址健康状态.get(键);
+}
+
+function 记录备用结果(地址项, 成功, 延迟 = null) {
+  if (!地址项) return;
+  const 状态 = 获取备用健康项(地址项);
+  const 现在 = Date.now();
+  if (成功) {
+    状态.success += 1;
+    状态.fail = Math.max(0, 状态.fail - 1);
+    状态.lastSuccess = 现在;
+    状态.cooldownUntil = 0;
+    if (Number.isFinite(延迟)) 状态.latency = 状态.latency == null ? 延迟 : Math.round(状态.latency * 0.7 + 延迟 * 0.3);
+  } else {
+    状态.fail += 1;
+    状态.lastFailure = 现在;
+    if (状态.fail >= 2) 状态.cooldownUntil = 现在 + Math.min(15 * 60_000, 30_000 * (2 ** Math.min(5, 状态.fail - 2)));
   }
-  return 可用地址列表[0];
+  if (备用地址健康状态.size > 64) {
+    const 最旧 = [...备用地址健康状态.entries()].sort((a, b) => Math.max(a[1].lastSuccess, a[1].lastFailure) - Math.max(b[1].lastSuccess, b[1].lastFailure))[0];
+    if (最旧) 备用地址健康状态.delete(最旧[0]);
+  }
+}
+
+function 获取备用候选地址(工作器地区 = '', 数量 = 稳定回退候选数) {
+  if (备用地址列表.length === 0) return [];
+  const 现在 = Date.now();
+  const 地区顺序 = 获取优先地区列表(工作器地区 || 'HK');
+  const 地区排名 = new Map(地区顺序.map((值, 索引) => [值, 索引]));
+  return 备用地址列表.map(地址项 => {
+    const 状态 = 获取备用健康项(地址项);
+    const 冷却 = 状态.cooldownUntil > 现在;
+    const 地区分 = 地区排名.has(地址项.regionCode) ? 地区排名.get(地址项.regionCode) : 99;
+    const 健康分 = 状态.success * 12 - 状态.fail * 18 - (状态.latency == null ? 0 : Math.min(30, 状态.latency / 50));
+    return { ...地址项, __冷却: 冷却, __地区分: 地区分, __健康分: 健康分 };
+  }).sort((甲, 乙) => Number(甲.__冷却) - Number(乙.__冷却) || 甲.__地区分 - 乙.__地区分 || 乙.__健康分 - 甲.__健康分)
+    .slice(0, Math.max(1, Math.min(备用地址列表.length, 数量)))
+    .map(({ __冷却, __地区分, __健康分, ...地址项 }) => 地址项);
+}
+
+async function 获取最佳备用地址(工作器地区 = '') {
+  return 获取备用候选地址(工作器地区, 1)[0] || null;
+}
+
+async function 等待套接字打开(套接字, 超时 = 稳定拨号超时) {
+  if (!套接字?.opened) return 套接字;
+  let 计时器;
+  try {
+    await Promise.race([
+      套接字.opened,
+      new Promise((_, reject) => { 计时器 = setTimeout(() => reject(new Error(`TCP dial timeout after ${超时}ms`)), 超时); })
+    ]);
+    return 套接字;
+  } catch (错误) {
+    try { 套接字.close?.(); } catch (忽略) {}
+    throw 错误;
+  } finally {
+    if (计时器) clearTimeout(计时器);
+  }
 }
 
 function 解析地址和端口(输入) {
@@ -869,47 +935,145 @@ export default {
 async function 处理订阅页面(请求, 唯一标识 = null) {
   if (!唯一标识) 唯一标识 = 认证令牌;
 
-  const 页面文本 = `<!doctype html><html lang=zh-CN><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>订阅中心</title><style>body{margin:0;background:#0b0f14;color:#e8eef6;font:15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.w{max-width:760px;margin:auto;padding:28px}h1{font-size:26px;margin:0 0 10px}.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin:18px 0}button{border:1px solid #2f4054;background:#121b26;color:#e8eef6;border-radius:6px;padding:10px;cursor:pointer}button:hover{background:#1a2635}.o{display:none;white-space:pre-wrap;word-break:break-all;background:#101820;border:1px solid #2a3848;border-radius:6px;padding:12px;margin-top:14px}a{color:#7cc7ff}</style><div class=w><h1>订阅中心</h1><p>选择客户端生成链接，或直接获取订阅内容。</p><div id=b class=g></div><button onclick="b64()">获取订阅内容</button><div id=o class=o></div></div><script>const S="${订阅转换接口}",d=s=>atob(s),B=[{n:d('Q0xBU0g='),sub:1,t:d('Y2xhc2g='),s:d('Y2xhc2g6Ly9pbnN0YWxsLWNvbmZpZz91cmw9')},{n:d('U1VSR0U='),sub:1,t:d('c3VyZ2U='),s:d('c3VyZ2U6Ly8vaW5zdGFsbC1jb25maWc/dXJsPQ==')},{n:d('U0lORy1CT1g='),sub:1,t:d('c2luZ2JveA=='),s:d('c2luZy1ib3g6Ly9pbnN0YWxsLWNvbmZpZz91cmw9')},{n:d('TE9PTg=='),sub:1,t:d('bG9vbg=='),s:d('bG9vbjovL2luc3RhbGw/dXJsPQ==')},{n:d('UVVBTlRVTVVMVCBY'),sub:1,t:d('cXVhbng='),s:d('cXVhbnR1bXVsdC14Oi8vaW5zdGFsbC1jb25maWc/dXJsPQ==')},{n:d('VjJSQVk='),sub:0,t:'',s:''},{n:d('U2hhZG93cm9ja2V0'),sub:0,t:'',s:d('c2hhZG93cm9ja2V0Oi8vYWRkLw==')},{n:d('VjJSQVlORw=='),sub:0,t:'',s:d('djJyYXluZzovL2luc3RhbGw/dXJsPQ==')},{n:d('TkVLT1JBWQ=='),sub:0,t:'',s:d('bmVrb3JheTovL2luc3RhbGwtY29uZmlnP3VybD0=')},{n:d('U1RBU0g='),sub:1,t:d('Y2xhc2g='),s:d('c3Rhc2g6Ly9pbnN0YWxsP3VybD0=')}],O=document.getElementById("o");b.innerHTML=B.map((x,i)=>'<button onclick=g('+i+')>'+x.n+'</button>').join("");function show(t){O.style.display="block";O.textContent=t;navigator.clipboard&&navigator.clipboard.writeText(t).catch(()=>{})}function app(s){if(!s)return;let i=document.createElement("iframe");i.style.display="none";i.src=s;document.body.append(i);setTimeout(()=>i.remove(),1200)}function g(i){let c=B[i],u=location.href.replace(/\\/$/,"")+"/sub",f=u;if(c.sub){f=S+"?target="+c.t+"&url="+encodeURIComponent(u)+"&insert=false"}let s=c.s?c.s+encodeURIComponent(f):"";show(f);app(s)}function b64(){fetch(location.href.replace(/\\/$/,"")+"/sub").then(r=>r.text()).then(show).catch(()=>show("获取订阅失败"))}</script></html>`;
+  const 页面文本 = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>订阅中心</title><style>
+body{margin:0;background:#f3f6fa;color:#1f2937;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.w{max-width:980px;margin:auto;padding:28px}.card{background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:22px;margin:0 0 18px;box-shadow:0 8px 28px rgba(15,23,42,.06)}h1{font-size:26px;margin:0 0 8px}h2{font-size:19px;margin:0 0 16px}.muted{color:#64748b}.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(115px,1fr));gap:9px}.row{display:grid;grid-template-columns:170px 1fr auto;gap:10px;align-items:center;margin:10px 0}.row label{font-weight:650}.actions{display:flex;gap:8px;flex-wrap:wrap}button{border:0;background:#2563eb;color:#fff;border-radius:10px;padding:10px 14px;cursor:pointer;font-weight:650}button.alt{background:#06a6be}button.orange{background:#ff922b}button.green{background:#08a66c}input,select,textarea{width:100%;box-sizing:border-box;border:1px solid #d8dee8;border-radius:10px;padding:10px 12px;background:#fbfdff;color:#1f2937}textarea{min-height:120px;resize:vertical}.o{display:none;white-space:pre-wrap;word-break:break-all;background:#f8fafc;border:1px solid #dbe3ed;border-radius:10px;padding:12px;margin-top:14px}.status{margin-top:10px;color:#475569}@media(max-width:700px){.w{padding:12px}.card{padding:16px;border-radius:14px}.row{grid-template-columns:1fr}.row label{margin-top:6px}}
+</style><div class="w"><div class="card"><h1>订阅中心</h1><p class="muted">保留原有客户端选择，并加入自适应订阅与优选订阅生成。</p><div id="b" class="g"></div><div id="o" class="o"></div></div>
+<div class="card"><h2>📋 获取节点链接</h2><div class="row"><label>节点链接格式</label><input id="nodeLink" readonly placeholder="正在生成…"><div class="actions"><button class="alt" onclick="qr('nodeLink')">二维码</button><button class="orange" onclick="copyId('nodeLink')">复制节点</button></div></div><div class="row"><label>自适应订阅</label><input id="adaptiveLink" readonly><div class="actions"><button class="alt" onclick="qr('adaptiveLink')">二维码</button><button class="orange" onclick="copyId('adaptiveLink')">复制订阅</button></div></div></div>
+<div class="card"><h2>⚡ 优选订阅生成</h2><div class="row"><label>优选订阅模式</label><select id="mode" onchange="modeChanged()"><option value="smart">优选订阅生成器（多源质量优先）</option><option value="random">随机优选（每日稳定洗牌）</option><option value="custom">自定义订阅（支持汇聚订阅）</option></select><span></span></div><div id="customBox" style="display:none"><label><b>自定义优选 / 订阅源</b></label><textarea id="sources" placeholder="每行一个 https://... 地址；最多读取 5 个源。可填写 host:port#备注 文本源，也可填写 VLESS/Trojan/SS 订阅。"></textarea></div><div class="row"><label>生成结果</label><input id="preferredLink" readonly><div class="actions"><button class="green" onclick="onlineTest()">在线优选</button><button onclick="copyId('preferredLink')">复制链接</button></div></div><div id="status" class="status">质量优先：优先使用内置稳定源；随机模式每天稳定重排；自定义模式只汇聚你填写的源。</div></div></div>
+<script>
+const S="${订阅转换接口}",d=s=>atob(s),B=[{n:d('Q0xBU0g='),sub:1,t:d('Y2xhc2g='),s:d('Y2xhc2g6Ly9pbnN0YWxsLWNvbmZpZz91cmw9')},{n:d('U1VSR0U='),sub:1,t:d('c3VyZ2U='),s:d('c3VyZ2U6Ly8vaW5zdGFsbC1jb25maWc/dXJsPQ==')},{n:d('U0lORy1CT1g='),sub:1,t:d('c2luZ2JveA=='),s:d('c2luZy1ib3g6Ly9pbnN0YWxsLWNvbmZpZz91cmw9')},{n:d('TE9PTg=='),sub:1,t:d('bG9vbg=='),s:d('bG9vbjovL2luc3RhbGw/dXJsPQ==')},{n:d('UVVBTlRVTVVMVCBY'),sub:1,t:d('cXVhbng='),s:d('cXVhbnR1bXVsdC14Oi8vaW5zdGFsbC1jb25maWc/dXJsPQ==')},{n:d('VjJSQVk='),sub:0,t:'',s:''},{n:d('U2hhZG93cm9ja2V0'),sub:0,t:'',s:d('c2hhZG93cm9ja2V0Oi8vYWRkLw==')},{n:d('VjJSQVlORw=='),sub:0,t:'',s:d('djJyYXluZzovL2luc3RhbGw/dXJsPQ==')},{n:d('TkVLT1JBWQ=='),sub:0,t:'',s:d('bmVrb3JheTovL2luc3RhbGwtY29uZmlnP3VybD0=')},{n:d('U1RBU0g='),sub:1,t:d('Y2xhc2g='),s:d('c3Rhc2g6Ly9pbnN0YWxsP3VybD0=')}],O=document.getElementById('o');
+function baseSub(){return location.origin+location.pathname.replace(/\/$/,'')+'/sub'}
+function build(mode,target='auto'){let u=new URL(baseSub());u.searchParams.set('target',target);u.searchParams.set('bestmode',mode);if(mode==='custom'){let v=document.getElementById('sources').value.trim();if(v)u.searchParams.set('source',v)}return u.toString()}
+b.innerHTML=B.map((x,i)=>'<button onclick="g('+i+')">'+x.n+'</button>').join('');
+function show(t){O.style.display='block';O.textContent=t}
+function app(s){if(!s)return;let i=document.createElement('iframe');i.style.display='none';i.src=s;document.body.append(i);setTimeout(()=>i.remove(),1200)}
+function g(i){let c=B[i],u=baseSub(),f=u;if(c.sub)f=S+'?target='+c.t+'&url='+encodeURIComponent(u)+'&insert=false';let x=c.s?c.s+encodeURIComponent(f):'';show(f);app(x)}
+function copyId(id){let e=document.getElementById(id);navigator.clipboard&&navigator.clipboard.writeText(e.value).then(()=>status.textContent='已复制').catch(()=>{});e.select&&e.select()}
+function qr(id){let v=document.getElementById(id).value;if(v)open('https://quickchart.io/qr?size=320&text='+encodeURIComponent(v),'_blank','noopener')}
+function refresh(){let m=mode.value;preferredLink.value=build(m);adaptiveLink.value=build('smart');localStorage.setItem('cfnew-compact-sources',sources.value);fetch(build(m,'link'),{cache:'no-store'}).then(r=>r.text()).then(t=>{if(/^\s*(vless|trojan|ss):\/\//i.test(t))nodeLink.value=t.trim();else nodeLink.value='暂未取得可用节点'}).catch(()=>nodeLink.value='节点生成失败')}
+function modeChanged(){customBox.style.display=mode.value==='custom'?'block':'none';refresh()}
+function onlineTest(){status.textContent='正在检查生成链路…';fetch(build(mode.value,'link'),{cache:'no-store'}).then(r=>r.text()).then(t=>status.textContent=/^\s*(vless|trojan|ss):\/\//i.test(t)?'生成成功：已取得有效节点格式':'生成失败：当前源没有可用节点').catch(e=>status.textContent='检查失败：'+e.message)}
+sources.value=localStorage.getItem('cfnew-compact-sources')||'';sources.addEventListener('input',()=>{clearTimeout(window.__st);window.__st=setTimeout(refresh,250)});modeChanged();
+</script></html>`;
 
-  return new Response(页面文本, {
-    status: 200,
-    headers: { 'Content-Type': 'text/html; charset=utf-8' }
-  });
+  return new Response(页面文本, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+}
+
+function 推断紧凑订阅目标(请求) {
+  const UA = String(请求.headers.get('User-Agent') || '').toLowerCase();
+  if (/clash|mihomo|stash/.test(UA)) return 'clash';
+  if (/sing-box|singbox/.test(UA)) return 'singbox';
+  if (/surge/.test(UA)) return 'surge';
+  if (/quantumult/.test(UA)) return 'quanx';
+  if (/loon/.test(UA)) return 'loon';
+  return '';
+}
+
+function 紧凑每日散列(文本) {
+  let h = 2166136261;
+  for (let i = 0; i < 文本.length; i++) { h ^= 文本.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+
+function 尝试解码订阅文本(文本) {
+  const 值 = String(文本 || '').trim();
+  if (!值 || 值.includes('://') || 值.includes('\n')) return 值;
+  if (!/^[A-Za-z0-9+/_=-]+$/.test(值)) return 值;
+  try {
+    const 标准 = 值.replace(/-/g, '+').replace(/_/g, '/');
+    const 二进制 = atob(标准.padEnd(Math.ceil(标准.length / 4) * 4, '='));
+    const 字节 = Uint8Array.from(二进制, c => c.charCodeAt(0));
+    const 解码 = new TextDecoder().decode(字节);
+    return 解码.includes('://') || 解码.includes('\n') ? 解码 : 值;
+  } catch (_) { return 值; }
+}
+
+async function 获取紧凑自定义源(源文本, 唯一标识, 工作器域名) {
+  const 网址列表 = String(源文本 || '').split(/[\n,;|]+/).map(v => v.trim()).filter(v => /^https?:\/\//i.test(v)).slice(0, 5);
+  if (!网址列表.length) return [];
+  const 结果 = [];
+  const 响应列表 = await Promise.allSettled(网址列表.map(async 网址 => {
+    const 控制器 = new AbortController();
+    const 计时器 = setTimeout(() => 控制器.abort(), 4500);
+    try {
+      const 响应 = await fetch(网址, { signal: 控制器.signal, headers: { 'Accept': 'text/plain,*/*;q=0.8' } });
+      if (!响应.ok) throw new Error(`HTTP ${响应.status}`);
+      return 尝试解码订阅文本(await 响应.text());
+    } finally { clearTimeout(计时器); }
+  }));
+  for (const 项目 of 响应列表) {
+    if (项目.status !== 'fulfilled') continue;
+    const 地址记录 = [];
+    for (const 原行 of String(项目.value || '').replace(/\r/g, '').split('\n')) {
+      const 行 = 原行.trim();
+      if (!行 || 行.startsWith('#') || 行.startsWith('//')) continue;
+      if (/^(vless|trojan|ss):\/\//i.test(行)) { 结果.push(行); continue; }
+      const 匹配 = 行.match(/^(\[[^\]]+\]|[^:#\s]+)(?::(\d+))?(?:#(.*))?$/);
+      if (!匹配) continue;
+      const ip = 匹配[1].replace(/^\[|\]$/g, '');
+      const 端口 = parseInt(匹配[2] || '443', 10);
+      if (!ip || !Number.isFinite(端口) || 端口 < 1 || 端口 > 65535) continue;
+      地址记录.push({ ip, 端口, name: (匹配[3] || '自定义汇聚').trim() });
+      if (地址记录.length >= 80) break;
+    }
+    if (地址记录.length) 结果.push(...从新地址生成链接(地址记录, 唯一标识, 工作器域名));
+    if (结果.length >= 200) break;
+  }
+  return [...new Set(结果)].slice(0, 200);
 }
 
 async function 处理订阅请求(请求, 唯一标识, 网址 = null) {
   if (!网址) 网址 = new URL(请求.url);
-
+  const 模式 = String(网址.searchParams.get('bestmode') || 'smart').toLowerCase();
+  const 目标 = String(网址.searchParams.get('target') || 'raw').toLowerCase();
   const 最终链接列表 = [];
   const 工作器域名 = 网址.hostname;
 
-  const 原生列表 = [{ ip: 工作器域名, isp: '原生地址' }];
-  最终链接列表.push(...从来源生成链接(原生列表, 唯一标识, 工作器域名));
-
-  if (启用其他优选) {
-    const 域名列表 = 直连域名列表.map(d => ({ ip: d.domain, isp: d.name || d.domain }));
-    最终链接列表.push(...从来源生成链接(域名列表, 唯一标识, 工作器域名));
+  if (模式 === 'custom') {
+    最终链接列表.push(...await 获取紧凑自定义源(网址.searchParams.get('source') || '', 唯一标识, 工作器域名));
+  } else {
+    const 原生列表 = [{ ip: 工作器域名, isp: '原生地址' }];
+    最终链接列表.push(...从来源生成链接(原生列表, 唯一标识, 工作器域名));
+    if (启用其他优选) {
+      const 域名列表 = 直连域名列表.map(d => ({ ip: d.domain, isp: d.name || d.domain }));
+      最终链接列表.push(...从来源生成链接(域名列表, 唯一标识, 工作器域名));
+    }
+    if (启用仓库优选) {
+      const 新地址列表 = await 拉取并解析新地址();
+      if (新地址列表.length > 0) 最终链接列表.push(...从新地址生成链接(新地址列表, 唯一标识, 工作器域名));
+    }
   }
 
-  if (启用仓库优选) {
-    const 新地址列表 = await 拉取并解析新地址();
-    if (新地址列表.length > 0) 最终链接列表.push(...从新地址生成链接(新地址列表, 唯一标识, 工作器域名));
+  let 去重列表 = [...new Set(最终链接列表)];
+  if (模式 === 'random' && 去重列表.length > 1) {
+    const 日期 = new Date().toISOString().slice(0, 10);
+    去重列表 = 去重列表.slice().sort((a, b) => 紧凑每日散列(`${日期}|${a}`) - 紧凑每日散列(`${日期}|${b}`));
+  }
+  if (去重列表.length === 0) {
+    const 错误备注 = '所有节点获取失败';
+    去重列表.push(`${解码64('dmxlc3M=')}://00000000-0000-0000-0000-000000000000@127.0.0.1:80?encryption=none&security=none&type=ws&host=error.com&path=%2F#${encodeURIComponent(错误备注)}`);
   }
 
-  if (最终链接列表.length === 0) {
-    const 错误备注 = "所有节点获取失败";
-    const 错误链接 = `${解码64('dmxlc3M=')}://00000000-0000-0000-0000-000000000000@127.0.0.1:80?encryption=none&security=none&type=ws&host=error.com&path=%2F#${encodeURIComponent(错误备注)}`;
-    最终链接列表.push(错误链接);
+  if (目标 === 'link' || 目标 === 'node') {
+    const 首节点 = 去重列表.find(v => /^(vless|trojan|ss):\/\//i.test(v)) || 去重列表[0];
+    return new Response(首节点, { headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' } });
   }
 
-  const 订阅内容 = btoa(最终链接列表.join('\n'));
+  if (目标 === 'auto') {
+    const 自动目标 = 推断紧凑订阅目标(请求);
+    if (自动目标) {
+      try {
+        const 原始网址 = new URL(网址.toString());
+        原始网址.searchParams.set('target', 'raw');
+        const 转换网址 = `${订阅转换接口}?target=${encodeURIComponent(自动目标)}&url=${encodeURIComponent(原始网址.toString())}&insert=false`;
+        const 转换响应 = await fetch(转换网址, { headers: { 'User-Agent': 'CFnew-Compact-Adaptive/3.0' } });
+        if (转换响应.ok) return new Response(await 转换响应.arrayBuffer(), { headers: { 'Content-Type': 转换响应.headers.get('Content-Type') || 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' } });
+      } catch (_) {}
+    }
+  }
 
-  return new Response(订阅内容, {
-    headers: {
-      'Content-Type': 'text/plain; charset=utf-8',
-      'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-    },
-  });
+  const 订阅内容 = btoa(去重列表.join('\n'));
+  return new Response(订阅内容, { headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0' } });
 }
 
 function 从来源生成链接(列表, 唯一标识, 工作器域名) {
@@ -997,7 +1161,7 @@ async function 处理网页套接字请求(请求, 当前回退地址 = null) {
   const [客户端套接字, 服务端套接字] = Object.values(网页套接字对);
   服务端套接字.accept();
 
-  let 远程连接包装 = { 套接字: null };
+  let 远程连接包装 = { 套接字: null, generation: 0, connectingPromise: null, responseHeader: null, activeCandidate: null };
   let 域名系统处理器 = null;
   let 握手缓冲 = new Uint8Array(0);
   const 握手缓冲上限 = 16384;
@@ -1014,10 +1178,14 @@ async function 处理网页套接字请求(请求, 当前回退地址 = null) {
         await 域名系统处理器.write(当前数据);
         return;
       }
+      if (!远程连接包装.套接字 && 远程连接包装.connectingPromise) {
+        try { await 远程连接包装.connectingPromise; } catch (忽略) {}
+      }
       if (远程连接包装.套接字) {
-        const 写入器 = 远程连接包装.套接字.writable.getWriter();
-        await 写入器.write(当前数据);
-        写入器.releaseLock();
+        const 当前远程 = 远程连接包装.套接字;
+        const 写入器 = 当前远程.writable.getWriter();
+        try { await 写入器.write(当前数据); }
+        finally { try { 写入器.releaseLock(); } catch (忽略) {} }
         return;
       }
 
@@ -1055,42 +1223,85 @@ async function 处理网页套接字请求(请求, 当前回退地址 = null) {
 }
 
 async function 转发传输控制(地址类型参数, 主机, 端口数字, 原始数据, 网页套接字, 响应头, 远程连接包装, 回退地址值 = null) {
+  远程连接包装.responseHeader = 响应头;
+
   async function 连接并发送(地址, 端口) {
     const 远程套接字 = connect({ hostname: 地址, port: 端口 });
+    await 等待套接字打开(远程套接字, 稳定拨号超时);
     const 写入器 = 远程套接字.writable.getWriter();
-    await 写入器.write(原始数据);
-    写入器.releaseLock();
+    try { if (原始数据?.byteLength) await 写入器.write(原始数据); }
+    catch (错误) { try { 远程套接字.close?.(); } catch (忽略) {} throw 错误; }
+    finally { try { 写入器.releaseLock(); } catch (忽略) {} }
     return 远程套接字;
   }
 
+  const 候选 = [];
+  const 已见 = new Set();
+  function 加入候选(地址, 端口, 健康项 = null, 标签 = 'fallback') {
+    if (!地址) return;
+    const 键 = `${String(地址).toLowerCase()}:${Number(端口 || 端口数字)}`;
+    if (已见.has(键) || 键 === `${String(主机).toLowerCase()}:${Number(端口数字)}`) return;
+    已见.add(键);
+    候选.push({ 地址, 端口: Number(端口 || 端口数字), 健康项, 标签 });
+  }
+
+  const 显式回退 = 回退地址值 || 回退地址;
+  if (显式回退 && 显式回退.trim()) {
+    const 解析值 = 解析地址和端口(显式回退.trim());
+    加入候选(解析值.地址, 解析值.端口 || 端口数字, null, 'explicit');
+  }
+  for (const 地址项 of 获取备用候选地址(当前工作器地区, 稳定回退候选数)) 加入候选(地址项.domain, 地址项.端口 || 端口数字, 地址项, 地址项.regionCode || 'region');
+
+  let 候选索引 = -1;
+  async function 安装连接(地址, 端口, 健康项 = null, 标签 = 'direct') {
+    const 本代 = ++远程连接包装.generation;
+    const 旧套接字 = 远程连接包装.套接字;
+    远程连接包装.套接字 = null;
+    远程连接包装.activeCandidate = { 地址, 端口, 标签 };
+    if (旧套接字) try { 旧套接字.close?.(); } catch (忽略) {}
+    const 开始 = Date.now();
+    const 套接字 = await 连接并发送(地址, 端口);
+    if (本代 !== 远程连接包装.generation) { try { 套接字.close?.(); } catch (忽略) {} throw new Error('stale connection generation'); }
+    远程连接包装.套接字 = 套接字;
+    const 是否当前 = () => 远程连接包装.generation === 本代 && 远程连接包装.套接字 === 套接字;
+    const 获取响应头 = () => {
+      const 头 = 远程连接包装.responseHeader;
+      if (头) 远程连接包装.responseHeader = null;
+      return 头;
+    };
+    void 连接流(套接字, 网页套接字, 获取响应头, 重试连接, 是否当前, () => {
+      if (健康项) 记录备用结果(健康项, true, Date.now() - 开始);
+    }, () => {
+      if (健康项) 记录备用结果(健康项, false);
+    });
+    return 套接字;
+  }
+
   async function 重试连接() {
-    let 回退主机, 回退端口;
-    if (回退地址值 && 回退地址值.trim()) {
-      const 解析值 = 解析地址和端口(回退地址值);
-      回退主机 = 解析值.地址;
-      回退端口 = 解析值.端口 || 端口数字;
-    } else if (回退地址 && 回退地址.trim()) {
-      const 解析值 = 解析地址和端口(回退地址);
-      回退主机 = 解析值.地址;
-      回退端口 = 解析值.端口 || 端口数字;
-    } else {
-      const 最佳备用地址 = await 获取最佳备用地址(当前工作器地区);
-      回退主机 = 最佳备用地址 ? 最佳备用地址.domain : 主机;
-      回退端口 = 最佳备用地址 ? 最佳备用地址.端口 : 端口数字;
-    }
-    const 新套接字 = await 连接并发送(回退主机 || 主机, 回退端口);
-    远程连接包装.套接字 = 新套接字;
-    新套接字.closed.catch(() => { }).finally(() => 安静关闭套接字(网页套接字));
-    连接流(新套接字, 网页套接字, 响应头, null);
+    if (远程连接包装.connectingPromise) return 远程连接包装.connectingPromise;
+    远程连接包装.connectingPromise = (async () => {
+      while (++候选索引 < 候选.length) {
+        const 当前 = 候选[候选索引];
+        try {
+          await 安装连接(当前.地址, 当前.端口, 当前.健康项, 当前.标签);
+          return true;
+        } catch (错误) {
+          if (当前.健康项) 记录备用结果(当前.健康项, false);
+        }
+      }
+      ++远程连接包装.generation;
+      远程连接包装.套接字 = null;
+      if (网页套接字.readyState === 1) 安静关闭套接字(网页套接字);
+      return false;
+    })();
+    try { return await 远程连接包装.connectingPromise; }
+    finally { 远程连接包装.connectingPromise = null; }
   }
 
   try {
-    const 初始套接字 = await 连接并发送(主机, 端口数字);
-    远程连接包装.套接字 = 初始套接字;
-    连接流(初始套接字, 网页套接字, 响应头, 重试连接);
-  } catch (err) {
-    console.log('Initial connection failed, trying fallback:', err);
-    重试连接();
+    await 安装连接(主机, 端口数字, null, 'direct');
+  } catch (错误) {
+    await 重试连接();
   }
 }
 
@@ -1160,25 +1371,61 @@ function 创建可读流(套接字, 早期数据头) {
   });
 }
 
-async function 连接流(远程套接字, 网页套接字, 头数据, 重试函数) {
-  let 头 = 头数据, 是否有数据 = false;
-  await 远程套接字.readable.pipeTo(
-    new WritableStream({
-      async write(数据块, 控制器) {
-        是否有数据 = true;
-        if (网页套接字.readyState !== 1) 控制器.error(错误_网页套接字未打开);
-        if (头) {
-          网页套接字.send(await new Blob([头, 数据块]).arrayBuffer());
-          头 = null;
-        } else {
-          网页套接字.send(数据块);
-        }
-      },
-      abort(原因) { console.error("Readable aborted:", 原因); },
-    })
-  ).catch((error) => { console.error("Stream connection error:", error); 安静关闭套接字(网页套接字); });
+async function 连接流(远程套接字, 网页套接字, 获取头数据, 重试函数, 是否当前 = () => true, 首字节成功 = null, 首字节失败 = null) {
+  let 是否有数据 = false;
+  let 已触发重试 = false;
+  let 读取器 = null;
+  let 计时器 = null;
 
-  if (!是否有数据 && 重试函数) 重试函数();
+  async function 触发重试() {
+    if (已触发重试 || !是否当前()) return false;
+    已触发重试 = true;
+    try { 首字节失败?.(); } catch (忽略) {}
+    try { 远程套接字.close?.(); } catch (忽略) {}
+    if (!重试函数) {
+      if (网页套接字.readyState === 1) 安静关闭套接字(网页套接字);
+      return false;
+    }
+    try { return !!(await 重试函数()); }
+    catch (忽略) { if (网页套接字.readyState === 1) 安静关闭套接字(网页套接字); return false; }
+  }
+
+  计时器 = setTimeout(() => { if (!是否有数据 && 是否当前()) void 触发重试(); }, 稳定首字节超时);
+  try {
+    读取器 = 远程套接字.readable.getReader();
+    for (;;) {
+      const { value, done } = await 读取器.read();
+      if (done) break;
+      if (!是否当前()) break;
+      const 数据块 = value instanceof Uint8Array ? value : new Uint8Array(value);
+      if (!数据块.byteLength) continue;
+      if (!是否有数据) {
+        是否有数据 = true;
+        if (计时器) { clearTimeout(计时器); 计时器 = null; }
+        try { 首字节成功?.(); } catch (忽略) {}
+        const 头 = typeof 获取头数据 === 'function' ? 获取头数据() : 获取头数据;
+        if (网页套接字.readyState !== 1) throw new Error(错误_网页套接字未打开);
+        if (头) 网页套接字.send(await new Blob([头, 数据块]).arrayBuffer());
+        else 网页套接字.send(数据块);
+      } else {
+        if (网页套接字.readyState !== 1) throw new Error(错误_网页套接字未打开);
+        网页套接字.send(数据块);
+      }
+    }
+  } catch (错误) {
+    if (是否当前()) {
+      if (!是否有数据) await 触发重试();
+      else if (!已触发重试 && 网页套接字.readyState === 1) 安静关闭套接字(网页套接字);
+    }
+  } finally {
+    if (计时器) clearTimeout(计时器);
+    try { 读取器?.releaseLock(); } catch (忽略) {}
+  }
+  if (!是否当前()) return;
+  if (!是否有数据) {
+    if (await 触发重试()) return;
+  }
+  if (!已触发重试 && 网页套接字.readyState === 1) 安静关闭套接字(网页套接字);
 }
 
 function 提取用户数据报帧(状态, 块) {
