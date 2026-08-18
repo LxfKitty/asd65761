@@ -1,6 +1,6 @@
 import { connect } from 'cloudflare:sockets';
 
-// CFnew Compact Stable v3.0.0 - AdaptiveLink + StableTransport
+// CFnew Compact Stable v3.1.0 - AdaptiveLink + StableTransport
 
 // CFnew calm glass UI + mobile transport compatibility repair. UI/API behavior is preserved; WebSocket handshake and DNS transport are hardened.
 const __CFNativeResponse = globalThis.Response;
@@ -910,9 +910,9 @@ export default {
           }
 
           if (网址.pathname.includes('/sub')) {
-            const 路径部分 = 网址.pathname.split('/');
+            const 路径部分 = 网址.pathname.split('/').filter(Boolean);
             if (路径部分.length === 2 && 路径部分[1] === 'sub') {
-              const 唯一标识 = 路径部分[0].substring(1);
+              const 唯一标识 = 路径部分[0];
               if (是否有效格式(唯一标识)) {
                 if (唯一标识 === 认证令牌) return await 处理订阅请求(请求, 唯一标识, 网址);
                 return new Response('UUID错误', { status: 403 });
@@ -942,18 +942,20 @@ body{margin:0;background:#f3f6fa;color:#1f2937;font:14px -apple-system,BlinkMacS
 <div class="card"><h2>⚡ 优选订阅生成</h2><div class="row"><label>优选订阅模式</label><select id="mode" onchange="modeChanged()"><option value="smart">优选订阅生成器（多源质量优先）</option><option value="random">随机优选（每日稳定洗牌）</option><option value="custom">自定义订阅（支持汇聚订阅）</option></select><span></span></div><div id="customBox" style="display:none"><label><b>自定义优选 / 订阅源</b></label><textarea id="sources" placeholder="每行一个 https://... 地址；最多读取 5 个源。可填写 host:port#备注 文本源，也可填写 VLESS/Trojan/SS 订阅。"></textarea></div><div class="row"><label>生成结果</label><input id="preferredLink" readonly><div class="actions"><button class="green" onclick="onlineTest()">在线优选</button><button onclick="copyId('preferredLink')">复制链接</button></div></div><div id="status" class="status">质量优先：优先使用内置稳定源；随机模式每天稳定重排；自定义模式只汇聚你填写的源。</div></div></div>
 <script>
 const S="${订阅转换接口}",d=s=>atob(s),B=[{n:d('Q0xBU0g='),sub:1,t:d('Y2xhc2g='),s:d('Y2xhc2g6Ly9pbnN0YWxsLWNvbmZpZz91cmw9')},{n:d('U1VSR0U='),sub:1,t:d('c3VyZ2U='),s:d('c3VyZ2U6Ly8vaW5zdGFsbC1jb25maWc/dXJsPQ==')},{n:d('U0lORy1CT1g='),sub:1,t:d('c2luZ2JveA=='),s:d('c2luZy1ib3g6Ly9pbnN0YWxsLWNvbmZpZz91cmw9')},{n:d('TE9PTg=='),sub:1,t:d('bG9vbg=='),s:d('bG9vbjovL2luc3RhbGw/dXJsPQ==')},{n:d('UVVBTlRVTVVMVCBY'),sub:1,t:d('cXVhbng='),s:d('cXVhbnR1bXVsdC14Oi8vaW5zdGFsbC1jb25maWc/dXJsPQ==')},{n:d('VjJSQVk='),sub:0,t:'',s:''},{n:d('U2hhZG93cm9ja2V0'),sub:0,t:'',s:d('c2hhZG93cm9ja2V0Oi8vYWRkLw==')},{n:d('VjJSQVlORw=='),sub:0,t:'',s:d('djJyYXluZzovL2luc3RhbGw/dXJsPQ==')},{n:d('TkVLT1JBWQ=='),sub:0,t:'',s:d('bmVrb3JheTovL2luc3RhbGwtY29uZmlnP3VybD0=')},{n:d('U1RBU0g='),sub:1,t:d('Y2xhc2g='),s:d('c3Rhc2g6Ly9pbnN0YWxsP3VybD0=')}],O=document.getElementById('o');
-function baseSub(){return location.origin+location.pathname.replace(/\/$/,'')+'/sub'}
-function build(mode,target='auto'){let u=new URL(baseSub());u.searchParams.set('target',target);u.searchParams.set('bestmode',mode);if(mode==='custom'){let v=document.getElementById('sources').value.trim();if(v)u.searchParams.set('source',v)}return u.toString()}
+function baseSub(){let p=String(location.pathname||'/');while(p.length>1&&p.endsWith('/'))p=p.slice(0,-1);return location.origin+p+'/sub'}
+function build(m,t){let u=new URL(baseSub());u.searchParams.set('target',t||'auto');u.searchParams.set('bestmode',m);if(m==='custom'){let v=document.getElementById('sources').value.trim();if(v)u.searchParams.set('source',v)}return u.toString()}
+function validNode(t){t=String(t||'').trim();return t.startsWith('vless://')||t.startsWith('trojan://')||t.startsWith('ss://')}
 b.innerHTML=B.map((x,i)=>'<button onclick="g('+i+')">'+x.n+'</button>').join('');
 function show(t){O.style.display='block';O.textContent=t}
 function app(s){if(!s)return;let i=document.createElement('iframe');i.style.display='none';i.src=s;document.body.append(i);setTimeout(()=>i.remove(),1200)}
 function g(i){let c=B[i],u=baseSub(),f=u;if(c.sub)f=S+'?target='+c.t+'&url='+encodeURIComponent(u)+'&insert=false';let x=c.s?c.s+encodeURIComponent(f):'';show(f);app(x)}
-function copyId(id){let e=document.getElementById(id);navigator.clipboard&&navigator.clipboard.writeText(e.value).then(()=>status.textContent='已复制').catch(()=>{});e.select&&e.select()}
-function qr(id){let v=document.getElementById(id).value;if(v)open('https://quickchart.io/qr?size=320&text='+encodeURIComponent(v),'_blank','noopener')}
-function refresh(){let m=mode.value;preferredLink.value=build(m);adaptiveLink.value=build('smart');localStorage.setItem('cfnew-compact-sources',sources.value);fetch(build(m,'link'),{cache:'no-store'}).then(r=>r.text()).then(t=>{if(/^\s*(vless|trojan|ss):\/\//i.test(t))nodeLink.value=t.trim();else nodeLink.value='暂未取得可用节点'}).catch(()=>nodeLink.value='节点生成失败')}
-function modeChanged(){customBox.style.display=mode.value==='custom'?'block':'none';refresh()}
-function onlineTest(){status.textContent='正在检查生成链路…';fetch(build(mode.value,'link'),{cache:'no-store'}).then(r=>r.text()).then(t=>status.textContent=/^\s*(vless|trojan|ss):\/\//i.test(t)?'生成成功：已取得有效节点格式':'生成失败：当前源没有可用节点').catch(e=>status.textContent='检查失败：'+e.message)}
-sources.value=localStorage.getItem('cfnew-compact-sources')||'';sources.addEventListener('input',()=>{clearTimeout(window.__st);window.__st=setTimeout(refresh,250)});modeChanged();
+function copyId(id){let e=document.getElementById(id);if(!e||!e.value)return;if(navigator.clipboard)navigator.clipboard.writeText(e.value).then(()=>status.textContent='已复制').catch(()=>{});if(e.select)e.select()}
+function qr(id){let e=document.getElementById(id),v=e&&e.value||'';if(v)open('https://quickchart.io/qr?size=320&text='+encodeURIComponent(v),'_blank','noopener')}
+async function fetchNode(m,force){let u=new URL(build(m,'link'));if(force)u.searchParams.set('refresh','1');let c=new AbortController(),timer=setTimeout(()=>c.abort(),12000);try{let r=await fetch(u.toString(),{cache:'no-store',signal:c.signal}),t=(await r.text()).trim();if(!r.ok||!validNode(t))throw new Error('没有生成有效节点');return t}finally{clearTimeout(timer)}}
+async function refresh(){let m=mode.value;preferredLink.value=build(m,'auto');adaptiveLink.value=build('smart','auto');localStorage.setItem('cfnew-compact-sources',sources.value);try{nodeLink.value=await fetchNode(m,false)}catch(e){nodeLink.value='节点生成失败'}}
+function modeChanged(){customBox.style.display=mode.value==='custom'?'block':'none';try{localStorage.setItem('cfnew-compact-mode',mode.value)}catch(e){}refresh()}
+async function onlineTest(){status.textContent='正在刷新并验证生成链路…';try{nodeLink.value=await fetchNode(mode.value,true);status.textContent='在线优选成功：已取得有效节点'}catch(e){status.textContent='在线优选失败：'+(e.name==='AbortError'?'请求超时':e.message)}}
+sources.value=localStorage.getItem('cfnew-compact-sources')||'';let sm=localStorage.getItem('cfnew-compact-mode');if(sm&&['smart','random','custom'].includes(sm))mode.value=sm;sources.addEventListener('input',()=>{clearTimeout(window.__st);window.__st=setTimeout(refresh,300)});modeChanged();
 </script></html>`;
 
   return new Response(页面文本, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });

@@ -1,5 +1,5 @@
-// CFnew - 终端 v3.0.0
-// 版本: v3.0.0 + SmartBestCF v4 + AdaptiveLink + StableTransport 
+// CFnew - 终端 v3.1.0
+// 版本: v3.1.0 + SmartBestCF v4.1 + AdaptiveLink Fixed + StableTransport 
 import { connect as 连接 } from 'cloudflare:sockets';
 
 // CFnew calm glass UI + mobile transport compatibility repair. UI/API behavior is preserved; WebSocket handshake and DNS transport are hardened.
@@ -2399,9 +2399,9 @@ document.addEventListener('DOMContentLoaded', function () {
             }
           }
           if (网址698.pathname.includes('/sub')) {
-            const 路径部分列表 = 网址698.pathname.split('/');
+            const 路径部分列表 = 网址698.pathname.split('/').filter(Boolean);
             if (路径部分列表.length === 2 && 路径部分列表[1] === 'sub') {
-              const 用户656 = 路径部分列表[0].substring(1);
+              const 用户656 = 路径部分列表[0];
               if (是否有效格式(用户656)) {
                 if (用户656 === 认证令牌) {
                   return await 处理订阅请求(请求735, 用户656, 网址698, 本地值733, 本地值734);
@@ -3588,6 +3588,7 @@ async function 处理订阅请求(请求507, 用户506, 网址505 = null, 上下
   let 目标503 = 网址505.searchParams.get('target') || 'base64';
   if (String(目标503).toLowerCase() === 'auto') 目标503 = 推断自适应订阅目标(请求507);
   const 优选订阅模式 = String(网址505.searchParams.get('bestmode') || 'smart').toLowerCase();
+  const 强制优选刷新 = ['1', 'true', 'yes'].includes(String(网址505.searchParams.get('refresh') || '').toLowerCase());
   const 别名命名器502 = 创建值节点命名器(false);
 
   // 如果启用了ECH，使用自定义值
@@ -3662,7 +3663,7 @@ async function 处理订阅请求(请求507, 用户506, 网址505 = null, 上下
     const 当前启用BestCF智能 = 获取配置开关值('bestcfAuto', true);
     let 智能结果 = null;
     if (当前启用BestCF智能 && 优选订阅模式 !== 'custom') {
-      智能结果 = await 获取BestCF智能优选结果(上下文, false, 环境值);
+      智能结果 = await 获取BestCF智能优选结果(上下文, 强制优选刷新, 环境值);
       智能结果 = 自适应优选列表(智能结果, 请求507, 优选订阅模式);
     }
     if (智能结果) {
@@ -6910,7 +6911,7 @@ async function 处理订阅值(请求241, 用户240 = null) {
                         <div id="selectionLogic" style="margin: 8px 0; color: #7aa9c4; font-family: 'Courier New', monospace; font-size: 0.9rem; text-shadow: 0 0 3px #7aa9c4;">${翻译值.selectionLogic}${翻译值.selectionLogicText}</div>
                 </div>
             </div>
-            <div class="card" id="configCard" style="display: none;">
+            <div class="card" id="configCard" style="display: block;">
                     <h2 class="card-title">${翻译值.configManagement}</h2>
                 <div id="kvStatus" style="margin-bottom: 20px; padding: 10px; background: rgba(8, 4, 28, 0.8); border: 1px solid #00f0ff; color: #00f0ff;">
                     ${翻译值.kvStatusChecking}
@@ -7869,24 +7870,66 @@ async function 测试接口() {
 }
 
 function 获取订阅基础路径() {
-  return window.location.pathname.replace(/\/$/, '') + '/sub';
+  let 路径 = String(window.location.pathname || '/');
+  while (路径.length > 1 && 路径.endsWith('/')) 路径 = 路径.slice(0, -1);
+  return 路径 + '/sub';
+}
+function 解析优选来源文本(文本) {
+  const 换行 = String.fromCharCode(10);
+  return String(文本 || '').split(换行).flatMap(function (行) {
+    return 行.split(/[;,]+/);
+  }).map(function (值) { return 值.trim(); }).filter(Boolean);
+}
+function 获取优选订阅模式() {
+  const 模式元素 = document.getElementById('preferredSubscriptionMode');
+  const 值 = 模式元素 ? String(模式元素.value || 'smart').toLowerCase() : 'smart';
+  return ['smart', 'random', 'custom'].includes(值) ? 值 : 'smart';
 }
 function 更新优选订阅模块() {
   const 模式元素 = document.getElementById('preferredSubscriptionMode');
   const 来源元素 = document.getElementById('preferredAggregateSources');
   const 输出元素 = document.getElementById('preferredSubscriptionLink');
   if (!模式元素 || !输出元素) return;
-  const 模式 = 模式元素.value || 'smart';
+  const 模式 = 获取优选订阅模式();
+  try { localStorage.setItem('cfnewPreferredMode', 模式); } catch (忽略) {}
   const 基础 = new URL(获取订阅基础路径(), window.location.origin);
   基础.searchParams.set('target', 'auto');
   基础.searchParams.set('bestmode', 模式);
   输出元素.value = 基础.toString();
-  if (来源元素) 来源元素.disabled = 模式 !== 'custom';
+  if (来源元素) {
+    来源元素.disabled = 模式 !== 'custom';
+    来源元素.setAttribute('aria-disabled', 模式 !== 'custom' ? 'true' : 'false');
+  }
+  const 状态 = document.getElementById('preferredSubscriptionStatus');
+  if (状态 && 模式 === 'custom' && 来源元素 && !来源元素.value.trim()) 状态.textContent = '自定义模式需要先填写并保存至少一个来源';
+  else if (状态 && 状态.textContent.startsWith('自定义模式需要')) 状态.textContent = '';
+}
+async function 获取单节点链接(模式, 强制刷新) {
+  const 网址 = new URL(获取订阅基础路径(), window.location.origin);
+  网址.searchParams.set('target', 'link');
+  网址.searchParams.set('bestmode', 模式 || 'smart');
+  if (强制刷新) 网址.searchParams.set('refresh', '1');
+  const 控制器 = new AbortController();
+  const 计时器 = setTimeout(function () { 控制器.abort(); }, 12000);
+  try {
+    const 响应 = await fetch(网址.toString(), { cache: 'no-store', signal: 控制器.signal });
+    const 文本 = (await 响应.text()).trim();
+    const 有效 = 文本.startsWith('vless://') || 文本.startsWith('trojan://') || 文本.startsWith('ss://');
+    if (!响应.ok || !有效) throw new Error(文本 && 文本.length < 160 ? 文本 : '未生成有效节点');
+    return 文本;
+  } finally {
+    clearTimeout(计时器);
+  }
 }
 async function 初始化自适应链接模块() {
   const 自适应 = document.getElementById('adaptiveSubscriptionLink');
   const 节点 = document.getElementById('adaptiveNodeLink');
   const 来源 = document.getElementById('preferredAggregateSources');
+  const 模式元素 = document.getElementById('preferredSubscriptionMode');
+  try {
+    const 已保存模式 = localStorage.getItem('cfnewPreferredMode');
+    if (模式元素 && ['smart', 'random', 'custom'].includes(已保存模式 || '')) 模式元素.value = 已保存模式;
+  } catch (忽略) {}
   if (自适应) {
     const 网址 = new URL(获取订阅基础路径(), window.location.origin);
     网址.searchParams.set('target', 'auto');
@@ -7894,58 +7937,92 @@ async function 初始化自适应链接模块() {
     自适应.value = 网址.toString();
   }
   更新优选订阅模块();
+  if (节点) 节点.value = '正在生成…';
   try {
-    const 响应 = await fetch(获取订阅基础路径() + '?target=link&bestmode=smart', { cache: 'no-store' });
-    if (节点) 节点.value = 响应.ok ? (await 响应.text()).trim() : '节点生成失败';
-  } catch (错误) { if (节点) 节点.value = '节点生成失败'; }
+    const 文本 = await 获取单节点链接('smart', false);
+    if (节点) 节点.value = 文本;
+  } catch (错误) {
+    if (节点) 节点.value = '节点生成失败：' + (错误 && 错误.name === 'AbortError' ? '请求超时' : (错误.message || '未知错误'));
+  }
   try {
     const 响应 = await fetch(window.location.pathname + '/api/config', { cache: 'no-store' });
     if (响应.ok) {
       const 配置 = await 响应.json();
-      if (来源 && 配置.yxURL) 来源.value = String(配置.yxURL).split(/[,;]+/).map(值 => 值.trim()).filter(Boolean).join('\n');
+      if (来源 && 配置.yxURL) 来源.value = 解析优选来源文本(配置.yxURL).join(String.fromCharCode(10));
     }
   } catch (忽略) {}
+  更新优选订阅模块();
 }
 async function 复制自适应字段(标识) {
   const 元素 = document.getElementById(标识);
-  if (!元素?.value) return;
-  try { await navigator.clipboard.writeText(元素.value); 显示提示('已复制', 'success', { duration: 1800 }); }
-  catch (错误) { 元素.select?.(); document.execCommand?.('copy'); 显示提示('已复制', 'success', { duration: 1800 }); }
+  if (!元素 || !元素.value || 元素.value.startsWith('节点生成失败')) return;
+  try {
+    await navigator.clipboard.writeText(元素.value);
+    显示提示('已复制', 'success', { duration: 1800 });
+  } catch (错误) {
+    try { 元素.select(); document.execCommand('copy'); } catch (忽略) {}
+    显示提示('已复制', 'success', { duration: 1800 });
+  }
 }
 function 打开自适应二维码(标识) {
-  const 值 = document.getElementById(标识)?.value || '';
-  if (!值) return;
-  // QR 是纯前端可选能力，失败不会影响节点/订阅本身。
-  window.open('https://quickchart.io/qr?size=320&text=' + encodeURIComponent(值), '_blank', 'noopener,noreferrer');
+  const 值 = (document.getElementById(标识) || {}).value || '';
+  if (!值 || 值.startsWith('节点生成失败')) return;
+  const 二维码地址 = 'https://quickchart.io/qr?size=320&text=' + encodeURIComponent(值);
+  const 新窗口 = window.open(二维码地址, '_blank', 'noopener,noreferrer');
+  if (!新窗口) 显示提示('浏览器阻止了二维码窗口，请允许弹窗后重试', 'warn', { duration: 3200 });
 }
 async function 在线检查优选() {
   const 状态 = document.getElementById('preferredSubscriptionStatus');
-  const 链接 = document.getElementById('preferredSubscriptionLink')?.value;
-  if (!链接) return;
-  if (状态) 状态.textContent = '正在检查订阅生成…';
+  const 节点 = document.getElementById('adaptiveNodeLink');
+  const 模式 = 获取优选订阅模式();
+  if (模式 === 'custom') {
+    const 来源 = document.getElementById('preferredAggregateSources');
+    if (!来源 || !解析优选来源文本(来源.value).length) {
+      if (状态) 状态.textContent = '✗ 请先填写并保存自定义来源';
+      return;
+    }
+  }
+  if (状态) 状态.textContent = 模式 === 'custom' ? '正在重新拉取自定义来源…' : '正在刷新优选数据并验证节点…';
   try {
-    const 网址 = new URL(链接);
-    网址.searchParams.set('target', 'link');
-    const 响应 = await fetch(网址.toString(), { cache: 'no-store' });
-    const 文本 = (await 响应.text()).trim();
-    if (!响应.ok || !/^(vless|trojan|ss):\/\//i.test(文本)) throw new Error('未生成有效节点');
-    if (状态) 状态.textContent = '✓ 优选订阅可正常生成';
-  } catch (错误) { if (状态) 状态.textContent = '✗ 检查失败：' + 错误.message; }
+    const 文本 = await 获取单节点链接(模式, true);
+    if (节点) 节点.value = 文本;
+    if (状态) 状态.textContent = '✓ 在线优选成功，已生成并验证首个节点';
+  } catch (错误) {
+    if (状态) 状态.textContent = '✗ 在线优选失败：' + (错误 && 错误.name === 'AbortError' ? '请求超时' : (错误.message || '未知错误'));
+  }
 }
 async function 保存优选汇聚来源() {
   const 来源元素 = document.getElementById('preferredAggregateSources');
   const 状态 = document.getElementById('preferredSubscriptionStatus');
   if (!来源元素) return;
-  const yxURL = 来源元素.value.split(/[\n,;]+/).map(值 => 值.trim()).filter(Boolean).join(',');
+  const 来源列表 = 解析优选来源文本(来源元素.value);
+  const yxURL = 来源列表.join(',');
+  if (!来源列表.length) {
+    if (状态) 状态.textContent = '✗ 至少填写一个自定义来源';
+    return;
+  }
+  if (来源列表.some(function (地址) { return !(地址.startsWith('https://') || 地址.startsWith('http://')); })) {
+    if (状态) 状态.textContent = '✗ 自定义来源必须是 http:// 或 https:// 地址';
+    return;
+  }
   try {
-    const 响应 = await fetch(window.location.pathname + '/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ yxURL }) });
-    const 数据 = await 响应.json().catch(() => ({}));
+    if (状态) 状态.textContent = '正在保存自定义来源…';
+    const 响应 = await fetch(window.location.pathname + '/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ yxURL: yxURL })
+    });
+    const 数据 = await 响应.json().catch(function () { return {}; });
     if (!响应.ok || 数据.success === false) throw new Error(数据.message || '保存失败');
-    const 原字段 = document.getElementById('yxURL'); if (原字段) 原字段.value = yxURL;
-    if (状态) 状态.textContent = '✓ 自定义汇聚来源已保存';
-    const 模式 = document.getElementById('preferredSubscriptionMode'); if (模式) 模式.value = 'custom';
+    const 原字段 = document.getElementById('yxURL');
+    if (原字段) 原字段.value = yxURL;
+    const 模式 = document.getElementById('preferredSubscriptionMode');
+    if (模式) 模式.value = 'custom';
     更新优选订阅模块();
-  } catch (错误) { if (状态) 状态.textContent = '✗ ' + 错误.message; }
+    if (状态) 状态.textContent = '✓ 自定义汇聚来源已写入原有 yxURL 配置';
+  } catch (错误) {
+    if (状态) 状态.textContent = '✗ ' + (错误.message || '保存失败');
+  }
 }
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', 初始化自适应链接模块, { once: true });
 else 初始化自适应链接模块();
