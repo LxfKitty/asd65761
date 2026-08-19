@@ -3,8 +3,8 @@ let config_JSON, 缓存SOCKS5白名单 = null, 调试日志打印 = false;
 let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
 const Pages静态页面 = 'https://edt-pages.github.io';
 
-// ===== CFnew UI layer v1.1: upstream core untouched; iOS glass admin presentation only =====
-const __CF_UI_VERSION = 'cfnew-ios-glass-edt-v1.1';
+// ===== CFnew UI layer v1.1.1: upstream core untouched; iOS glass presentation with first-party login =====
+const __CF_UI_VERSION = 'cfnew-ios-glass-edt-v1.1.1';
 const __CF_UI_EARLY = `<meta name="color-scheme" content="light dark"><script id="cfnew-theme-init">(function(){try{var m=localStorage.getItem('cfnew-theme-mode')||'system';if(!/^(system|light|dark)$/.test(m))m='system';var q=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)');var t=m==='system'?(q&&q.matches?'dark':'light'):m;document.documentElement.setAttribute('data-cfnew-theme-mode',m);document.documentElement.setAttribute('data-cfnew-theme',t);document.documentElement.style.colorScheme=t}catch(e){}})();</script>`;
 const __CF_UI_CSS = `<style id="cfnew-ui-style">
 :root{--cf-bg:#edf3fa;--cf-bg2:#e7eef8;--cf-panel:rgba(255,255,255,.58);--cf-panel-strong:rgba(255,255,255,.76);--cf-control:rgba(255,255,255,.68);--cf-text:#152234;--cf-muted:#66758a;--cf-faint:#91a0b3;--cf-border:rgba(255,255,255,.72);--cf-hairline:rgba(70,91,118,.13);--cf-accent:#4f7cff;--cf-accent2:#7b8fff;--cf-accent-soft:rgba(79,124,255,.12);--cf-success:#2d9c73;--cf-danger:#d05c6d;--cf-shadow:0 24px 70px rgba(34,52,78,.13),0 2px 10px rgba(34,52,78,.05);--cf-radius-xl:26px;--cf-radius-lg:20px;--cf-radius-md:14px}
@@ -75,6 +75,68 @@ async function __CFGetStyledStaticPage(path, options = {}) {
   const html = __CFStyleRemoteHtml(await response.text(), path.startsWith('/admin') ? 'admin' : 'simple', options.modules || '');
   headers.set('Content-Type', 'text/html; charset=UTF-8');
   return new Response(html, { status: options.status || response.status, statusText: response.statusText, headers });
+}
+function __CFEscapeHTML(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function __CFLoginPage(errorMessage = '', status = 200) {
+  const safeError = __CFEscapeHTML(errorMessage);
+  const errorBlock = safeError ? `<div class="login-message is-error" id="loginMessage" role="alert">${safeError}</div>` : '<div class="login-message" id="loginMessage" aria-live="polite"></div>';
+  const html = `<!doctype html>
+<html lang="zh-CN" data-cfnew-login="1">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>CFnew · 登录</title>
+<style>
+:root{--bg:#edf3fa;--bg2:#e7eef8;--panel:rgba(255,255,255,.58);--panel-strong:rgba(255,255,255,.78);--control:rgba(255,255,255,.72);--text:#152234;--muted:#66758a;--faint:#91a0b3;--border:rgba(255,255,255,.78);--hairline:rgba(70,91,118,.13);--accent:#4f7cff;--accent2:#7b8fff;--accent-soft:rgba(79,124,255,.12);--danger:#c84f65;--danger-soft:rgba(200,79,101,.10);--shadow:0 28px 90px rgba(34,52,78,.15),0 3px 14px rgba(34,52,78,.06)}
+html[data-theme="dark"]{--bg:#0d1520;--bg2:#121d2b;--panel:rgba(27,39,54,.62);--panel-strong:rgba(31,44,59,.82);--control:rgba(43,57,73,.72);--text:#edf3fb;--muted:#aab6c5;--faint:#7f8da0;--border:rgba(255,255,255,.10);--hairline:rgba(233,241,252,.11);--accent:#83a1ff;--accent2:#9aabff;--accent-soft:rgba(131,161,255,.14);--danger:#ea8896;--danger-soft:rgba(234,136,150,.11);--shadow:0 32px 100px rgba(0,0,0,.38),0 4px 18px rgba(0,0,0,.22)}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;overflow-x:hidden}html{height:100%;background:var(--bg)}body{min-height:100vh;min-height:100dvh;overflow-y:auto;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Segoe UI","PingFang SC","Microsoft YaHei",Arial,sans-serif;color:var(--text);background:radial-gradient(circle at 11% 7%,rgba(117,151,235,.22),transparent 34%),radial-gradient(circle at 88% 88%,rgba(144,119,218,.14),transparent 37%),linear-gradient(145deg,var(--bg),var(--bg2));-webkit-font-smoothing:antialiased}
+.bg-orb{position:fixed;border-radius:999px;filter:blur(2px);pointer-events:none;opacity:.68}.orb-a{width:360px;height:360px;left:-160px;top:15%;background:radial-gradient(circle,rgba(89,133,255,.13),transparent 69%)}.orb-b{width:430px;height:430px;right:-190px;bottom:-110px;background:radial-gradient(circle,rgba(145,115,231,.12),transparent 70%)}
+.topbar{position:fixed;inset:14px 16px auto;z-index:20;display:flex;align-items:center;justify-content:space-between;pointer-events:none}.brand,.theme-switcher{pointer-events:auto;border:1px solid var(--border);background:var(--panel);box-shadow:0 10px 34px rgba(28,39,53,.09);backdrop-filter:blur(24px) saturate(145%);-webkit-backdrop-filter:blur(24px) saturate(145%)}.brand{display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:14px;font-size:12px;font-weight:780;letter-spacing:.02em}.brand-mark{width:18px;height:18px;display:grid;place-items:center;border-radius:6px;background:linear-gradient(145deg,var(--accent),var(--accent2));color:#fff}.theme-switcher{display:flex;gap:3px;padding:6px;border-radius:14px}.theme-switcher button{border:0;border-radius:9px;background:transparent;color:var(--muted);padding:7px 9px;font:650 12px/1.2 inherit;cursor:pointer}.theme-switcher button:hover,.theme-switcher button.is-active{background:var(--control);color:var(--accent)}
+.login-shell{width:100%;min-height:100vh;min-height:100dvh;display:grid;place-items:center;padding:92px 20px 54px}.login-card{position:relative;width:min(100%,430px);padding:32px;border:1px solid var(--border);border-radius:28px;background:linear-gradient(150deg,var(--panel-strong),var(--panel));box-shadow:var(--shadow);backdrop-filter:blur(34px) saturate(150%);-webkit-backdrop-filter:blur(34px) saturate(150%);overflow:hidden}.login-card:before{content:"";position:absolute;inset:0 0 auto;height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.86),transparent);opacity:.72}.hero-icon{width:54px;height:54px;display:grid;place-items:center;border-radius:18px;background:linear-gradient(145deg,var(--accent),var(--accent2));color:#fff;box-shadow:0 15px 34px rgba(79,124,255,.24);margin-bottom:21px}.icon{width:20px;height:20px;display:block;fill:none;stroke:currentColor;stroke-width:1.85;stroke-linecap:round;stroke-linejoin:round}.hero-icon .icon{width:27px;height:27px}.login-card h1{margin:0;color:var(--text);font-size:28px;line-height:1.2;letter-spacing:-.035em}.subtitle{margin:9px 0 26px;color:var(--muted);font-size:14px;line-height:1.75}.field-label{display:block;margin:0 0 8px;color:var(--text);font-size:13px;font-weight:720}.password-wrap{position:relative}.password-wrap input{width:100%;height:52px;padding:0 50px 0 15px;border:1px solid var(--hairline);border-radius:15px;outline:none;background:var(--control);color:var(--text);font:500 15px/1 inherit;box-shadow:inset 0 1px 0 rgba(255,255,255,.22);transition:border-color .18s,box-shadow .18s,background .18s}.password-wrap input:focus{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-soft)}.password-wrap input::placeholder{color:var(--faint)}.reveal{position:absolute;right:7px;top:7px;width:38px;height:38px;display:grid;place-items:center;border:0;border-radius:11px;background:transparent;color:var(--muted);cursor:pointer}.reveal:hover{background:var(--accent-soft);color:var(--accent)}.submit{width:100%;height:52px;margin-top:15px;border:0;border-radius:15px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;font:750 14px/1 inherit;letter-spacing:.01em;box-shadow:0 12px 28px rgba(79,124,255,.22);cursor:pointer;transition:transform .16s,filter .16s}.submit:hover{transform:translateY(-1px);filter:brightness(1.02)}.submit:active{transform:translateY(0)}.submit:disabled{opacity:.66;cursor:wait;transform:none}.login-message{min-height:20px;margin-top:12px;color:var(--muted);font-size:12px;line-height:1.55}.login-message.is-error{padding:10px 12px;border:1px solid rgba(200,79,101,.18);border-radius:12px;background:var(--danger-soft);color:var(--danger)}.security-note{display:flex;align-items:flex-start;gap:8px;margin-top:22px;padding-top:18px;border-top:1px solid var(--hairline);color:var(--muted);font-size:12px;line-height:1.65}.security-note .icon{width:16px;height:16px;flex:0 0 16px;margin-top:1px;color:var(--accent)}
+@media(max-width:560px){.topbar{inset:10px 10px auto}.theme-switcher button{padding:7px 7px;font-size:11px}.login-shell{padding:82px 14px 32px}.login-card{padding:25px 20px;border-radius:24px}.login-card h1{font-size:25px}}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="bg-orb orb-a"></div><div class="bg-orb orb-b"></div>
+<div class="topbar">
+  <div class="brand"><span class="brand-mark"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.4 4.1L18 8.5l-4.1 1.4L12.5 14l-1.4-4.1L7 8.5l4.1-1.4L12 3z"></path><path d="M18 15l.8 2.2L21 18l-2.2.8L18 21l-.8-2.2L15 18l2.2-.8L18 15z"></path></svg></span><span>CFnew</span></div>
+  <div class="theme-switcher" role="group" aria-label="主题模式"><button type="button" data-mode="system">跟随系统</button><button type="button" data-mode="light">浅色</button><button type="button" data-mode="dark">深色</button></div>
+</div>
+<main class="login-shell">
+  <section class="login-card" aria-labelledby="loginTitle">
+    <div class="hero-icon"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="3"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path></svg></div>
+    <h1 id="loginTitle">登录 CFnew</h1>
+    <p class="subtitle">请输入管理员密码，验证成功后进入设置中心。</p>
+    <form id="loginForm" method="post" action="/login" novalidate>
+      <label class="field-label" for="password">管理员密码</label>
+      <div class="password-wrap"><input id="password" name="password" type="password" autocomplete="current-password" placeholder="请输入管理员密码" required autofocus><button class="reveal" type="button" id="revealPassword" aria-label="显示密码" title="显示密码"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"></path><circle cx="12" cy="12" r="2.5"></circle></svg></button></div>
+      <button class="submit" id="submitButton" type="submit">登录</button>
+      ${errorBlock}
+    </form>
+    <div class="security-note"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6l7-3z"></path><path d="M9.5 12l1.7 1.7 3.6-4"></path></svg><span>登录凭据仅用于当前部署的管理员验证。成功登录后会使用安全 Cookie 保持会话。</span></div>
+  </section>
+</main>
+<script>
+(function(){
+  var KEY='cfnew-theme-mode';
+  var media=window.matchMedia?window.matchMedia('(prefers-color-scheme: dark)'):null;
+  function get(){try{var v=localStorage.getItem(KEY)||'system';return /^(system|light|dark)$/.test(v)?v:'system'}catch(e){return 'system'}}
+  function resolved(v){return v==='system'?(media&&media.matches?'dark':'light'):v}
+  function paint(v,save){if(!/^(system|light|dark)$/.test(v))v='system';document.documentElement.setAttribute('data-theme',resolved(v));document.documentElement.style.colorScheme=resolved(v);if(save)try{localStorage.setItem(KEY,v)}catch(e){};document.querySelectorAll('[data-mode]').forEach(function(b){b.classList.toggle('is-active',b.getAttribute('data-mode')===v)})}
+  document.querySelectorAll('[data-mode]').forEach(function(b){b.addEventListener('click',function(){paint(b.getAttribute('data-mode'),true)})});paint(get(),false);
+  if(media){var sync=function(){if(get()==='system')paint('system',false)};if(media.addEventListener)media.addEventListener('change',sync);else if(media.addListener)media.addListener(sync)}
+  var form=document.getElementById('loginForm'),pwd=document.getElementById('password'),submit=document.getElementById('submitButton'),msg=document.getElementById('loginMessage'),reveal=document.getElementById('revealPassword');
+  reveal.addEventListener('click',function(){var show=pwd.type==='password';pwd.type=show?'text':'password';reveal.setAttribute('aria-label',show?'隐藏密码':'显示密码');reveal.setAttribute('title',show?'隐藏密码':'显示密码');pwd.focus()});
+  form.addEventListener('submit',async function(ev){ev.preventDefault();var value=pwd.value;if(!value){msg.textContent='请输入管理员密码。';msg.className='login-message is-error';pwd.focus();return}submit.disabled=true;submit.textContent='验证中';msg.textContent='';msg.className='login-message';try{var r=await fetch('/login',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8','Accept':'application/json'},body:new URLSearchParams({password:value}).toString(),credentials:'same-origin'});if(r.ok){var data={};try{data=await r.json()}catch(e){}if(data&&data.success){location.replace('/admin');return}}msg.textContent='密码错误，请重新输入。';msg.className='login-message is-error';pwd.select()}catch(e){msg.textContent='登录请求失败，请检查网络后重试。';msg.className='login-message is-error'}finally{submit.disabled=false;submit.textContent='登录'}});
+})();
+</script>
+</body>
+</html>`;
+  return new Response(html, { status, headers: { 'Content-Type': 'text/html; charset=UTF-8', 'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate', 'Pragma': 'no-cache', 'Expires': '0', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' } });
 }
 
 ///////////////////////////////////////////////////////全局常量和工具函数///////////////////////////////////////////////
@@ -177,7 +239,7 @@ export default {
 							return 响应;
 						}
 					}
-					return __CFGetStyledStaticPage('/login');
+					return __CFLoginPage(request.method === 'POST' ? '密码错误，请重新输入。' : '', request.method === 'POST' ? 401 : 200);
 				} else if (访问路径 === 'admin' || 访问路径.startsWith('admin/')) {//验证cookie后响应管理页面
 					const cookies = request.headers.get('Cookie') || '';
 					const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
